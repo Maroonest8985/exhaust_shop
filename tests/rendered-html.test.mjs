@@ -15,14 +15,21 @@ test("replaces the starter with the product-specific storefront", async () => {
 
   assert.match(page, /TaibosiApp/);
   assert.match(app, /내 차에 맞는/);
-  assert.match(app, /차량별 적합성 확인/);
+  assert.match(app, /적용 차량/);
   assert.match(app, /AdminDashboard/);
-  assert.match(app, /vehicleCatalog/);
+  assert.match(app, /storedVehiclesToCatalog/);
   assert.match(app, /vehicleModels/);
   assert.match(app, /vehicleGenerations/);
+  assert.match(app, /\/api\/vehicles/);
+  assert.match(app, /VehicleMasterModule/);
+  assert.match(app, /차량 마스터를 불러오는 중/);
+  assert.match(app, /사이트 노출 세대/);
   assert.match(app, /compatibleVehicles/);
   assert.match(app, /vehicleUrl\(finderSelection\)/);
   assert.match(app, /storedProductToCatalogProduct/);
+  assert.match(app, /ProductVehicleFitmentEditor/);
+  assert.match(app, /전 차종 적용/);
+  assert.match(app, /isUniversalFitment/);
   assert.match(app, /DatabaseProductDetailPage/);
   assert.match(app, /ProductDetailAdminModule/);
   assert.match(app, /상품 상세·수정/);
@@ -57,13 +64,15 @@ test("replaces the starter with the product-specific storefront", async () => {
 });
 
 test("defines catch-all customer and admin routes plus persistent actions", async () => {
-  const [catchAll, actions, ordersApi, productsApi, productDetailApi, inquiriesApi, adminSessionApi, adminAuth, database, migration, orderMigration, productMigration, inquiryMigration, vercel, packageJson] = await Promise.all([
+  const [catchAll, actions, ordersApi, productsApi, productDetailApi, inquiriesApi, vehiclesApi, productFitmentLibrary, adminSessionApi, adminAuth, database, migration, orderMigration, productMigration, inquiryMigration, vehicleMigration, productFitmentMigration, universalFitmentMigration, vercel, packageJson] = await Promise.all([
     readFile(new URL("app/[...path]/page.tsx", root), "utf8"),
     readFile(new URL("app/api/actions/route.ts", root), "utf8"),
     readFile(new URL("app/api/orders/route.ts", root), "utf8"),
     readFile(new URL("app/api/products/route.ts", root), "utf8"),
     readFile(new URL("app/api/products/[productId]/route.ts", root), "utf8"),
     readFile(new URL("app/api/inquiries/route.ts", root), "utf8"),
+    readFile(new URL("app/api/vehicles/route.ts", root), "utf8"),
+    readFile(new URL("lib/product-vehicle-fitments.ts", root), "utf8"),
     readFile(new URL("app/api/admin/session/route.ts", root), "utf8"),
     readFile(new URL("lib/admin-auth.ts", root), "utf8"),
     readFile(new URL("db/index.ts", root), "utf8"),
@@ -71,6 +80,9 @@ test("defines catch-all customer and admin routes plus persistent actions", asyn
     readFile(new URL("drizzle/0001_warm_rage.sql", root), "utf8"),
     readFile(new URL("drizzle/0002_mature_fixer.sql", root), "utf8"),
     readFile(new URL("drizzle/0003_sweet_gressill.sql", root), "utf8"),
+    readFile(new URL("drizzle/0004_hesitant_union_jack.sql", root), "utf8"),
+    readFile(new URL("drizzle/0005_premium_doctor_strange.sql", root), "utf8"),
+    readFile(new URL("drizzle/0006_quiet_wolf_cub.sql", root), "utf8"),
     readFile(new URL("vercel.json", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
   ]);
@@ -90,13 +102,26 @@ test("defines catch-all customer and admin routes plus persistent actions", asyn
   assert.match(productsApi, /PRODUCT_CREATED/);
   assert.match(productsApi, /publicCatalog/);
   assert.match(productsApi, /products\.status, "PUBLISHED"/);
+  assert.match(productsApi, /productVehicleFitments/);
+  assert.match(productsApi, /vehicleGenerationIds/);
+  assert.match(productsApi, /isUniversalFitment/);
   assert.match(productDetailApi, /export async function PATCH/);
   assert.match(productDetailApi, /PRODUCT_UPDATED/);
   assert.match(productDetailApi, /retainedImageIds/);
   assert.match(productDetailApi, /updatedAt: new Date\(\)/);
+  assert.match(productDetailApi, /productVehicleFitments/);
+  assert.match(productDetailApi, /isUniversalFitment/);
   assert.match(inquiriesApi, /supportInquiries/);
   assert.match(inquiriesApi, /isAdminRequest/);
   assert.match(inquiriesApi, /INQUIRY_CREATED/);
+  assert.match(vehiclesApi, /vehicleMakes/);
+  assert.match(vehiclesApi, /vehicleModels/);
+  assert.match(vehiclesApi, /vehicleGenerations/);
+  assert.match(vehiclesApi, /VEHICLE_GENERATION_CREATED/);
+  assert.match(vehiclesApi, /export async function DELETE/);
+  assert.match(vehiclesApi, /isAdminRequest/);
+  assert.match(productFitmentLibrary, /productVehicleFitmentsByProductIds/);
+  assert.match(productFitmentLibrary, /parseVehicleGenerationIds/);
   assert.match(adminSessionApi, /adminAuthConfigurationError/);
   assert.match(adminSessionApi, /no-store/);
   assert.match(adminAuth, /LOCAL_ADMIN_EMAIL/);
@@ -112,6 +137,12 @@ test("defines catch-all customer and admin routes plus persistent actions", asyn
   assert.match(productMigration, /CREATE TABLE "products"/);
   assert.match(productMigration, /CREATE TABLE "product_images"/);
   assert.match(inquiryMigration, /CREATE TABLE "support_inquiries"/);
+  assert.match(vehicleMigration, /CREATE TABLE "vehicle_makes"/);
+  assert.match(vehicleMigration, /CREATE TABLE "vehicle_models"/);
+  assert.match(vehicleMigration, /CREATE TABLE "vehicle_generations"/);
+  assert.match(vehicleMigration, /INSERT INTO "vehicle_makes"/);
+  assert.match(productFitmentMigration, /CREATE TABLE "product_vehicle_fitments"/);
+  assert.match(universalFitmentMigration, /is_universal_fitment/);
   assert.match(vercel, /"framework":\s*"nextjs"/);
   assert.match(packageJson, /"build":\s*"next build"/);
   assert.doesNotMatch(packageJson, /vinext|wrangler|@cloudflare\/vite-plugin/);

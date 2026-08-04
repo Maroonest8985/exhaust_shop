@@ -1,4 +1,4 @@
-import { index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
 
 export const commerceEvents = pgTable(
   "commerce_events",
@@ -49,6 +49,7 @@ export const products = pgTable(
     status: varchar("status", { length: 20 }).notNull().default("DRAFT"),
     stockType: varchar("stock_type", { length: 32 }).notNull(),
     fitmentStatus: varchar("fitment_status", { length: 32 }).notNull(),
+    isUniversalFitment: boolean("is_universal_fitment").notNull().default(false),
     summary: text("summary").notNull(),
     description: text("description").notNull(),
     specifications: jsonb("specifications").$type<Array<{ label: string; value: string }>>().notNull().default([]),
@@ -76,6 +77,73 @@ export const productImages = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("idx_product_images_product_sort").on(table.productId, table.sortOrder)],
+);
+
+export const vehicleMakes = pgTable(
+  "vehicle_makes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_vehicle_makes_name").on(table.name),
+    index("idx_vehicle_makes_active_sort").on(table.isActive, table.sortOrder),
+  ],
+);
+
+export const vehicleModels = pgTable(
+  "vehicle_models",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    makeId: uuid("make_id").notNull().references(() => vehicleMakes.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 120 }).notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_vehicle_models_make_name").on(table.makeId, table.name),
+    index("idx_vehicle_models_make_active_sort").on(table.makeId, table.isActive, table.sortOrder),
+  ],
+);
+
+export const vehicleGenerations = pgTable(
+  "vehicle_generations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    modelId: uuid("model_id").notNull().references(() => vehicleModels.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 120 }).notNull(),
+    years: jsonb("years").$type<string[]>().notNull().default([]),
+    engines: jsonb("engines").$type<string[]>().notNull().default([]),
+    specifications: jsonb("specifications").$type<string[]>().notNull().default([]),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_vehicle_generations_model_name").on(table.modelId, table.name),
+    index("idx_vehicle_generations_model_active_sort").on(table.modelId, table.isActive, table.sortOrder),
+  ],
+);
+
+export const productVehicleFitments = pgTable(
+  "product_vehicle_fitments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+    vehicleGenerationId: uuid("vehicle_generation_id").notNull().references(() => vehicleGenerations.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_product_vehicle_fitments_product_generation").on(table.productId, table.vehicleGenerationId),
+    index("idx_product_vehicle_fitments_generation").on(table.vehicleGenerationId),
+  ],
 );
 
 export const supportInquiries = pgTable(

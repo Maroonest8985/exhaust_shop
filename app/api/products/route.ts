@@ -1,7 +1,8 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { auditLogs, productImages, products } from "../../../db/schema";
+import { auditLogs, productImages, products, productVehicleFitments } from "../../../db/schema";
 import { isAdminRequest } from "../../../lib/admin-auth";
+import { existingVehicleGenerationIds, parseVehicleGenerationIds, productVehicleFitmentsByProductIds, type ProductVehicleFitmentSummary } from "../../../lib/product-vehicle-fitments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ function field(formData: FormData, name: string, maxLength: number) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
 
-function serializeProduct(product: typeof products.$inferSelect, images: Array<typeof productImages.$inferSelect>) {
+function serializeProduct(product: typeof products.$inferSelect, images: Array<typeof productImages.$inferSelect>, vehicleFitments: ProductVehicleFitmentSummary[] = []) {
   return {
     id: product.id,
     sku: product.sku,
@@ -30,9 +31,11 @@ function serializeProduct(product: typeof products.$inferSelect, images: Array<t
     status: product.status,
     stockType: product.stockType,
     fitmentStatus: product.fitmentStatus,
+    isUniversalFitment: product.isUniversalFitment,
     summary: product.summary,
     description: product.description,
     specifications: product.specifications,
+    vehicleFitments,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
     images: images.map((image) => ({
@@ -67,7 +70,9 @@ export async function GET(request: Request) {
       if (row.image) entry.images.push(row.image);
       grouped.set(row.product.id, entry);
     }
-    const items = Array.from(grouped.values()).map(({ product, images }) => serializeProduct(product, images));
+    const productIds = Array.from(grouped.keys());
+    const vehicleFitments = await productVehicleFitmentsByProductIds(productIds, publicCatalog);
+    const items = Array.from(grouped.values()).map(({ product, images }) => serializeProduct(product, images, vehicleFitments.get(product.id) ?? []));
     return Response.json(
       { products: items, total: items.length },
       { headers: { "cache-control": "no-store, max-age=0" } },
@@ -92,11 +97,13 @@ export async function POST(request: Request) {
     const status = field(formData, "status", 20);
     const stockType = field(formData, "stockType", 32);
     const fitmentStatus = field(formData, "fitmentStatus", 32);
+    const isUniversalFitment = field(formData, "isUniversalFitment", 5) === "true";
     const summary = field(formData, "summary", 500);
     const description = field(formData, "description", 10_000);
     const imageAltText = field(formData, "imageAltText", 300) || name;
     const rawSpecifications = field(formData, "specifications", 20_000);
     let specifications: Array<{ label: string; value: string }> = [];
+    let vehicleGenerationIds: string[] = [];
     try {
       const parsed = JSON.parse(rawSpecifications) as unknown;
       if (Array.isArray(parsed)) {
@@ -110,8 +117,9 @@ export async function POST(request: Request) {
           .filter((item): item is { label: string; value: string } => item !== null)
           .slice(0, 30);
       }
+      vehicleGenerationIds = parseVehicleGenerationIds(field(formData, "vehicleGenerationIds", 10_000));
     } catch {
-      return Response.json({ error: "제품 사양 형식이 올바르지 않습니다." }, { status: 422 });
+      return Response.json({ error: "제품 사양 또는 적용 차량 정보 형식이 올바르지 않습니다." }, { status: 422 });
     }
     const files = formData.getAll("images").filter((value): value is File => value instanceof File && value.size > 0);
 
@@ -136,6 +144,13 @@ export async function POST(request: Request) {
     }
     if (specifications.length === 0) {
       return Response.json({ error: "항목과 값이 모두 입력된 제품 사양을 하나 이상 등록해 주세요." }, { status: 422 });
+    }
+    if (!isUniversalFitment && vehicleGenerationIds.length === 0) {
+      return Response.json({ error: "적용 차량을 한 대 이상 선택해 주세요." }, { status: 422 });
+    }
+    const existingGenerationIds = isUniversalFitment ? new Set<string>() : await existingVehicleGenerationIds(vehicleGenerationIds);
+    if (!isUniversalFitment && existingGenerationIds.size !== vehicleGenerationIds.length) {
+      return Response.json({ error: "차량 마스터에 없는 세대 정보가 포함되어 있습니다. 다시 선택해 주세요." }, { status: 422 });
     }
     if (files.length === 0 || files.length > 4) {
       return Response.json({ error: "상품 이미지를 1장 이상 4장 이하로 등록해 주세요." }, { status: 422 });
@@ -165,21 +180,26 @@ export async function POST(request: Request) {
         status,
         stockType,
         fitmentStatus,
+        isUniversalFitment,
         summary,
         description,
         specifications,
       }).returning();
       const images = await tx.insert(productImages).values(encodedImages.map((image) => ({ ...image, productId: product.id }))).returning();
+      if (!isUniversalFitment) {
+        await tx.insert(productVehicleFitments).values(vehicleGenerationIds.map((vehicleGenerationId) => ({ productId: product.id, vehicleGenerationId })));
+      }
       await tx.insert(auditLogs).values({
         action: "PRODUCT_CREATED",
         targetType: "PRODUCT",
         targetId: product.id,
         reason: "운영자 상품 등록",
-        diff: { sku, slug, status, price, imageCount: images.length },
+        diff: { sku, slug, status, price, imageCount: images.length, isUniversalFitment, vehicleGenerationIds: isUniversalFitment ? [] : vehicleGenerationIds },
       });
       return { product, images };
     });
-    return Response.json({ product: serializeProduct(created.product, created.images) }, { status: 201 });
+    const vehicleFitments = await productVehicleFitmentsByProductIds([created.product.id]);
+    return Response.json({ product: serializeProduct(created.product, created.images, vehicleFitments.get(created.product.id) ?? []) }, { status: 201 });
   } catch (error) {
     if (typeof error === "object" && error && "code" in error && error.code === "23505") {
       return Response.json({ error: "이미 사용 중인 SKU 또는 URL 슬러그입니다." }, { status: 409 });

@@ -1,7 +1,8 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../../db";
-import { auditLogs, productImages, products } from "../../../../db/schema";
+import { auditLogs, productImages, products, productVehicleFitments } from "../../../../db/schema";
 import { isAdminRequest } from "../../../../lib/admin-auth";
+import { existingVehicleGenerationIds, parseVehicleGenerationIds, productVehicleFitmentsByProductIds, type ProductVehicleFitmentSummary } from "../../../../lib/product-vehicle-fitments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,7 +37,7 @@ function parseSpecifications(value: string) {
     .slice(0, 30);
 }
 
-function serializeProduct(product: typeof products.$inferSelect, images: Array<typeof productImages.$inferSelect>) {
+function serializeProduct(product: typeof products.$inferSelect, images: Array<typeof productImages.$inferSelect>, vehicleFitments: ProductVehicleFitmentSummary[] = []) {
   return {
     id: product.id,
     sku: product.sku,
@@ -48,9 +49,11 @@ function serializeProduct(product: typeof products.$inferSelect, images: Array<t
     status: product.status,
     stockType: product.stockType,
     fitmentStatus: product.fitmentStatus,
+    isUniversalFitment: product.isUniversalFitment,
     summary: product.summary,
     description: product.description,
     specifications: product.specifications,
+    vehicleFitments,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
     images: images.map((image) => ({
@@ -70,7 +73,8 @@ async function findProduct(productId: string) {
   const [product] = await db.select().from(products).where(eq(products.id, productId)).limit(1);
   if (!product) return null;
   const images = await db.select().from(productImages).where(eq(productImages.productId, product.id)).orderBy(asc(productImages.sortOrder));
-  return { product, images };
+  const vehicleFitments = await productVehicleFitmentsByProductIds([product.id]);
+  return { product, images, vehicleFitments: vehicleFitments.get(product.id) ?? [] };
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ productId: string }> }) {
@@ -83,7 +87,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ prod
     const result = await findProduct(productId);
     if (!result) return Response.json({ error: "상품을 찾을 수 없습니다." }, { status: 404 });
     return Response.json(
-      { product: serializeProduct(result.product, result.images) },
+      { product: serializeProduct(result.product, result.images, result.vehicleFitments) },
       { headers: { "cache-control": "no-store, max-age=0" } },
     );
   } catch {
@@ -111,19 +115,22 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
     const status = field(formData, "status", 20);
     const stockType = field(formData, "stockType", 32);
     const fitmentStatus = field(formData, "fitmentStatus", 32);
+    const isUniversalFitment = field(formData, "isUniversalFitment", 5) === "true";
     const summary = field(formData, "summary", 500);
     const description = field(formData, "description", 10_000);
     const imageAltText = field(formData, "imageAltText", 300) || name;
     let specifications: Array<{ label: string; value: string }> = [];
     let retainedImageIds: string[] = [];
+    let vehicleGenerationIds: string[] = [];
     try {
       specifications = parseSpecifications(field(formData, "specifications", 20_000));
       const parsedImageIds = JSON.parse(field(formData, "retainedImageIds", 10_000)) as unknown;
       retainedImageIds = Array.isArray(parsedImageIds)
         ? parsedImageIds.filter((value): value is string => typeof value === "string")
         : [];
+      vehicleGenerationIds = parseVehicleGenerationIds(field(formData, "vehicleGenerationIds", 10_000));
     } catch {
-      return Response.json({ error: "제품 사양 또는 이미지 정보 형식이 올바르지 않습니다." }, { status: 422 });
+      return Response.json({ error: "제품 사양, 이미지 또는 적용 차량 정보 형식이 올바르지 않습니다." }, { status: 422 });
     }
 
     if (
@@ -144,6 +151,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
     }
     if (!summary || !description) return Response.json({ error: "한 줄 요약과 상세 설명을 입력해 주세요." }, { status: 422 });
     if (specifications.length === 0) return Response.json({ error: "항목과 값이 모두 입력된 제품 사양을 하나 이상 등록해 주세요." }, { status: 422 });
+    if (!isUniversalFitment && vehicleGenerationIds.length === 0) return Response.json({ error: "적용 차량을 한 대 이상 선택해 주세요." }, { status: 422 });
+    const existingGenerationIds = isUniversalFitment ? new Set<string>() : await existingVehicleGenerationIds(vehicleGenerationIds);
+    if (!isUniversalFitment && existingGenerationIds.size !== vehicleGenerationIds.length) {
+      return Response.json({ error: "차량 마스터에 없는 세대 정보가 포함되어 있습니다. 다시 선택해 주세요." }, { status: 422 });
+    }
 
     const retainedSet = new Set(retainedImageIds);
     const retainedImages = existing.images.filter((image) => retainedSet.has(image.id));
@@ -178,6 +190,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
         status,
         stockType,
         fitmentStatus,
+        isUniversalFitment,
         summary,
         description,
         specifications,
@@ -195,21 +208,25 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
       if (encodedImages.length > 0) {
         await tx.insert(productImages).values(encodedImages.map((image) => ({ ...image, productId })));
       }
+      await tx.delete(productVehicleFitments).where(eq(productVehicleFitments.productId, productId));
+      if (!isUniversalFitment) {
+        await tx.insert(productVehicleFitments).values(vehicleGenerationIds.map((vehicleGenerationId) => ({ productId, vehicleGenerationId })));
+      }
       await tx.insert(auditLogs).values({
         action: "PRODUCT_UPDATED",
         targetType: "PRODUCT",
         targetId: productId,
         reason: existing.product.status !== status ? `상품 상태 변경: ${existing.product.status} → ${status}` : "운영자 상품 정보 수정",
         diff: {
-          before: { sku: existing.product.sku, slug: existing.product.slug, status: existing.product.status, price: existing.product.price, imageCount: existing.images.length },
-          after: { sku, slug, status, price, imageCount: retainedImages.length + encodedImages.length },
+          before: { sku: existing.product.sku, slug: existing.product.slug, status: existing.product.status, price: existing.product.price, imageCount: existing.images.length, isUniversalFitment: existing.product.isUniversalFitment, vehicleGenerationIds: existing.vehicleFitments.map((fitment) => fitment.vehicleGenerationId) },
+          after: { sku, slug, status, price, imageCount: retainedImages.length + encodedImages.length, isUniversalFitment, vehicleGenerationIds: isUniversalFitment ? [] : vehicleGenerationIds },
         },
       });
     });
 
     const updated = await findProduct(productId);
     if (!updated) return Response.json({ error: "수정한 상품을 다시 불러오지 못했습니다." }, { status: 503 });
-    return Response.json({ product: serializeProduct(updated.product, updated.images) });
+    return Response.json({ product: serializeProduct(updated.product, updated.images, updated.vehicleFitments) });
   } catch (error) {
     if (typeof error === "object" && error && "code" in error && error.code === "23505") {
       return Response.json({ error: "이미 사용 중인 SKU 또는 URL 슬러그입니다." }, { status: 409 });

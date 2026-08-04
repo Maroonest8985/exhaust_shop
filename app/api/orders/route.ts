@@ -1,30 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { count, desc, eq } from "drizzle-orm";
+import { count, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { auditLogs, commerceEvents, orderItems, orders, orderStatusHistory } from "../../../db/schema";
+import { auditLogs, commerceEvents, orderItems, orders, orderStatusHistory, products as productTable } from "../../../db/schema";
 import { isAdminRequest } from "../../../lib/admin-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const catalog = {
-  "TB-BMW-G8X-VCE-001": {
-    name: "BMW G80/G82 Valved Cat-back Exhaust",
-    unitPrice: 3_200_000,
-    stockType: "DOMESTIC",
-    fitment: "VERIFIED",
-  },
-} as const;
-
 const paymentMethods = new Set(["CARD", "EASY_PAY", "BANK_TRANSFER"]);
 const fulfillmentMethods = new Set(["INSTALLER_DELIVERY", "STANDARD_DELIVERY"]);
 
-type OrderInput = {
-  idempotencyKey?: unknown;
+type OrderLineInput = {
   productSku?: unknown;
   quantity?: unknown;
   optionName?: unknown;
   vehicleSnapshot?: unknown;
+};
+
+type OrderInput = OrderLineInput & {
+  idempotencyKey?: unknown;
+  items?: unknown;
   customerName?: unknown;
   customerEmail?: unknown;
   customerPhone?: unknown;
@@ -57,7 +52,19 @@ function validUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function serializeOrder(order: typeof orders.$inferSelect, item?: typeof orderItems.$inferSelect | null) {
+function serializeItem(item: typeof orderItems.$inferSelect) {
+  return {
+    productSku: item.productSku,
+    productName: item.productName,
+    optionName: item.optionName,
+    quantity: item.quantity,
+    unitPrice: item.unitPrice,
+    lineTotal: item.lineTotal,
+  };
+}
+
+function serializeOrder(order: typeof orders.$inferSelect, items: Array<typeof orderItems.$inferSelect> = []) {
+  const serializedItems = items.map(serializeItem);
   return {
     id: order.id,
     orderNumber: order.orderNumber,
@@ -70,16 +77,8 @@ function serializeOrder(order: typeof orders.$inferSelect, item?: typeof orderIt
     totalAmount: order.totalAmount,
     currency: order.currency,
     createdAt: order.createdAt,
-    item: item
-      ? {
-          productSku: item.productSku,
-          productName: item.productName,
-          optionName: item.optionName,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          lineTotal: item.lineTotal,
-        }
-      : null,
+    item: serializedItems[0] ?? null,
+    items: serializedItems,
   };
 }
 
@@ -91,18 +90,20 @@ export async function GET(request: Request) {
     const requestedLimit = Number(new URL(request.url).searchParams.get("limit") ?? 50);
     const limit = Number.isFinite(requestedLimit) ? Math.min(100, Math.max(1, Math.trunc(requestedLimit))) : 50;
     const db = getDb();
-    const [rows, totalRows] = await Promise.all([
-      db
-        .select({ order: orders, item: orderItems })
-        .from(orders)
-        .leftJoin(orderItems, eq(orderItems.orderId, orders.id))
-        .orderBy(desc(orders.createdAt))
-        .limit(limit),
+    const [orderRows, totalRows] = await Promise.all([
+      db.select().from(orders).orderBy(desc(orders.createdAt)).limit(limit),
       db.select({ value: count() }).from(orders),
     ]);
+    const itemRows = orderRows.length
+      ? await db.select().from(orderItems).where(inArray(orderItems.orderId, orderRows.map((order) => order.id)))
+      : [];
+    const itemsByOrder = new Map<string, Array<typeof orderItems.$inferSelect>>();
+    for (const item of itemRows) {
+      itemsByOrder.set(item.orderId, [...(itemsByOrder.get(item.orderId) ?? []), item]);
+    }
 
     return Response.json({
-      orders: rows.map(({ order, item }) => serializeOrder(order, item)),
+      orders: orderRows.map((order) => serializeOrder(order, itemsByOrder.get(order.id))),
       total: totalRows[0]?.value ?? 0,
     });
   } catch {
@@ -114,9 +115,15 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as OrderInput;
     const idempotencyKey = text(body.idempotencyKey, 36);
-    const productSku = text(body.productSku, 80) as keyof typeof catalog;
-    const product = catalog[productSku];
-    const quantity = typeof body.quantity === "number" ? Math.trunc(body.quantity) : 0;
+    const rawItems: OrderLineInput[] = Array.isArray(body.items)
+      ? body.items.filter((item): item is OrderLineInput => typeof item === "object" && item !== null)
+      : [{ productSku: body.productSku, quantity: body.quantity, optionName: body.optionName, vehicleSnapshot: body.vehicleSnapshot }];
+    const inputItems = rawItems.map((item) => ({
+      productSku: text(item.productSku, 80),
+      quantity: typeof item.quantity === "number" ? Math.trunc(item.quantity) : 0,
+      optionName: text(item.optionName, 200),
+      vehicleSnapshot: text(item.vehicleSnapshot, 300),
+    }));
     const customerName = text(body.customerName, 100);
     const customerEmail = text(body.customerEmail, 320).toLowerCase();
     const customerPhone = text(body.customerPhone, 30);
@@ -130,9 +137,9 @@ export async function POST(request: Request) {
 
     if (
       !validUuid(idempotencyKey) ||
-      !product ||
-      quantity < 1 ||
-      quantity > 10 ||
+      inputItems.length < 1 ||
+      inputItems.length > 20 ||
+      inputItems.some((item) => !item.productSku || item.quantity < 1 || item.quantity > 10) ||
       customerName.length < 2 ||
       !/^\S+@\S+\.\S+$/.test(customerEmail) ||
       customerPhone.length < 8 ||
@@ -143,17 +150,31 @@ export async function POST(request: Request) {
       !paymentMethods.has(paymentMethod) ||
       !fulfillmentMethods.has(fulfillmentMethod)
     ) {
-      return Response.json({ error: "주문자, 배송지, 결제 정보를 정확히 입력해 주세요." }, { status: 422 });
+      return Response.json({ error: "장바구니, 주문자, 배송지와 결제 정보를 정확히 입력해 주세요." }, { status: 422 });
     }
 
     const db = getDb();
     const [existing] = await db.select().from(orders).where(eq(orders.idempotencyKey, idempotencyKey)).limit(1);
     if (existing) {
-      const [existingItem] = await db.select().from(orderItems).where(eq(orderItems.orderId, existing.id)).limit(1);
-      return Response.json({ order: serializeOrder(existing, existingItem), duplicate: true });
+      const existingItems = await db.select().from(orderItems).where(eq(orderItems.orderId, existing.id));
+      return Response.json({ order: serializeOrder(existing, existingItems), duplicate: true });
     }
 
-    const subtotal = product.unitPrice * quantity;
+    const requestedSkus = [...new Set(inputItems.map((item) => item.productSku))];
+    const catalogRows = await db.select().from(productTable).where(inArray(productTable.sku, requestedSkus));
+    const catalogBySku = new Map(catalogRows.map((product) => [product.sku, product]));
+    if (inputItems.some((item) => {
+      const product = catalogBySku.get(item.productSku);
+      return !product || product.status !== "PUBLISHED" || product.stockType === "OUT_OF_STOCK";
+    })) {
+      return Response.json({ error: "판매 중인 상품 정보를 다시 확인해 주세요. 장바구니를 새로 구성해 주세요." }, { status: 422 });
+    }
+
+    const resolvedItems = inputItems.map((item) => {
+      const product = catalogBySku.get(item.productSku)!;
+      return { input: item, product, lineTotal: product.price * item.quantity };
+    });
+    const subtotal = resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0);
     const orderNumber = makeOrderNumber();
     const created = await db.transaction(async (tx) => {
       const [order] = await tx
@@ -181,20 +202,20 @@ export async function POST(request: Request) {
         })
         .returning();
 
-      const [item] = await tx
+      const items = await tx
         .insert(orderItems)
-        .values({
+        .values(resolvedItems.map(({ input, product, lineTotal }) => ({
           orderId: order.id,
-          productSku,
+          productSku: product.sku,
           productName: product.name,
-          optionName: text(body.optionName, 200) || "Carbon Quad · Valve Controller",
-          vehicleSnapshot: text(body.vehicleSnapshot, 300) || "BMW M3 G80 · 2022",
-          fitmentSnapshot: product.fitment,
+          optionName: input.optionName || null,
+          vehicleSnapshot: input.vehicleSnapshot || null,
+          fitmentSnapshot: product.fitmentStatus,
           stockTypeSnapshot: product.stockType,
-          quantity,
-          unitPrice: product.unitPrice,
-          lineTotal: subtotal,
-        })
+          quantity: input.quantity,
+          unitPrice: product.price,
+          lineTotal,
+        })))
         .returning();
 
       await tx.insert(orderStatusHistory).values({
@@ -205,11 +226,12 @@ export async function POST(request: Request) {
         actorType: "CUSTOMER",
         actorId: customerEmail,
       });
+      const itemSummary = resolvedItems.map(({ input, lineTotal }) => ({ productSku: input.productSku, quantity: input.quantity, lineTotal }));
       await tx.insert(commerceEvents).values({
         kind: "order",
         status: "RECEIVED",
         actorEmail: customerEmail,
-        payload: { orderNumber, productSku, quantity, totalAmount: subtotal },
+        payload: { orderNumber, items: itemSummary, totalAmount: subtotal },
       });
       await tx.insert(auditLogs).values({
         action: "ORDER_CREATED",
@@ -217,13 +239,13 @@ export async function POST(request: Request) {
         targetId: orderNumber,
         reason: "고객 주문 접수",
         actorEmail: customerEmail,
-        diff: { status: "RECEIVED", paymentStatus: "PENDING", productSku, quantity, totalAmount: subtotal },
+        diff: { status: "RECEIVED", paymentStatus: "PENDING", items: itemSummary, totalAmount: subtotal },
       });
 
-      return { order, item };
+      return { order, items };
     });
 
-    return Response.json({ order: serializeOrder(created.order, created.item) }, { status: 201 });
+    return Response.json({ order: serializeOrder(created.order, created.items) }, { status: 201 });
   } catch (error) {
     if (typeof error === "object" && error && "code" in error && error.code === "23505") {
       return Response.json({ error: "동일한 주문이 이미 처리됐습니다. 주문 내역을 확인해 주세요." }, { status: 409 });

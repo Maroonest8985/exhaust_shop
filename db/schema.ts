@@ -78,6 +78,32 @@ export const productImages = pgTable(
   (table) => [index("idx_product_images_product_sort").on(table.productId, table.sortOrder)],
 );
 
+export const supportInquiries = pgTable(
+  "support_inquiries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    inquiryNumber: varchar("inquiry_number", { length: 32 }).notNull(),
+    type: varchar("type", { length: 40 }).notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("RECEIVED"),
+    customerName: varchar("customer_name", { length: 100 }).notNull(),
+    customerEmail: varchar("customer_email", { length: 320 }).notNull(),
+    customerPhone: varchar("customer_phone", { length: 30 }).notNull(),
+    subject: varchar("subject", { length: 300 }).notNull(),
+    body: text("body").notNull(),
+    productSku: varchar("product_sku", { length: 80 }),
+    productName: text("product_name"),
+    vehicleSnapshot: text("vehicle_snapshot"),
+    sourcePath: varchar("source_path", { length: 120 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_support_inquiries_number").on(table.inquiryNumber),
+    index("idx_support_inquiries_status_created").on(table.status, table.createdAt),
+    index("idx_support_inquiries_customer_email").on(table.customerEmail),
+  ],
+);
+
 export const orders = pgTable(
   "orders",
   {

@@ -68,8 +68,22 @@ type Product = {
   fitment: Fitment;
   stock: Stock;
   image: string;
+  images?: Array<{ url: string; altText: string }>;
   kicker: string;
   compatibleVehicles: string[];
+};
+
+type CartItem = {
+  sku: string;
+  slug: string;
+  name: string;
+  price: number;
+  image: string;
+  fitment: Fitment;
+  stock: Stock;
+  optionName: string;
+  vehicleSnapshot: string | null;
+  quantity: number;
 };
 
 type VehicleSelection = {
@@ -88,6 +102,15 @@ type VehicleGeneration = {
   specifications: string[];
 };
 
+type StoredOrderItem = {
+  productSku: string;
+  productName: string;
+  optionName: string | null;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+};
+
 type StoredOrder = {
   id: string;
   orderNumber: string;
@@ -100,14 +123,26 @@ type StoredOrder = {
   totalAmount: number;
   currency: string;
   createdAt: string;
-  item: {
-    productSku: string;
-    productName: string;
-    optionName: string | null;
-    quantity: number;
-    unitPrice: number;
-    lineTotal: number;
-  } | null;
+  item: StoredOrderItem | null;
+  items?: StoredOrderItem[];
+};
+
+type StoredInquiry = {
+  id: string;
+  inquiryNumber: string;
+  type: string;
+  status: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  subject: string;
+  body: string;
+  productSku: string | null;
+  productName: string | null;
+  vehicleSnapshot: string | null;
+  sourcePath: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type StoredProduct = {
@@ -137,7 +172,7 @@ type OrderDetail = {
   fulfillmentMethod: string;
   totalAmount: number;
   createdAt: string;
-  items: NonNullable<StoredOrder["item"]>[];
+  items: StoredOrderItem[];
   history: { toStatus: string; reason: string | null; createdAt: string }[];
 };
 
@@ -157,6 +192,22 @@ const paymentStatusLabels: Record<string, string> = {
   PAID: "결제 완료",
   FAILED: "결제 실패",
   REFUNDED: "환불 완료",
+};
+
+const inquiryStatusLabels: Record<string, string> = {
+  RECEIVED: "신규 접수",
+  IN_REVIEW: "검토 중",
+  ANSWERED: "답변 완료",
+  CLOSED: "종결",
+};
+
+const inquiryTypeLabels: Record<string, string> = {
+  FITMENT: "차량 적합성",
+  INSTALLATION: "장착 조건",
+  ORDER_DELIVERY: "주문·배송",
+  WARRANTY_AS: "보증·AS",
+  RETURN_EXCHANGE: "반품·교환",
+  OTHER: "기타",
 };
 
 const heroImage =
@@ -238,6 +289,7 @@ function storedProductToCatalogProduct(product: StoredProduct): Product {
     fitment,
     stock,
     image: product.images[0]?.url ?? garageImage,
+    images: product.images.map((image) => ({ url: image.url, altText: image.altText })),
     kicker: product.summary,
     compatibleVehicles: [],
   };
@@ -385,6 +437,23 @@ const stockMap: Record<Stock, { label: string; icon: LucideIcon; className: stri
 };
 
 const formatPrice = (price: number) => new Intl.NumberFormat("ko-KR").format(price);
+const cartStorageKey = "taibosi_cart_v1";
+
+function readStoredCart(): CartItem[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(cartStorageKey) ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is CartItem => {
+        if (!item || typeof item !== "object") return false;
+        const candidate = item as Partial<CartItem>;
+        return typeof candidate.sku === "string" && typeof candidate.slug === "string" && typeof candidate.name === "string" && typeof candidate.price === "number" && candidate.price >= 0 && typeof candidate.image === "string" && typeof candidate.optionName === "string" && typeof candidate.quantity === "number" && (["VERIFIED", "CONDITIONAL", "CONSULTATION_REQUIRED", "INCOMPATIBLE", "NO_DATA"] as unknown[]).includes(candidate.fitment) && (["DOMESTIC", "OVERSEAS_ORDER", "PREORDER", "OUT_OF_STOCK"] as unknown[]).includes(candidate.stock);
+      })
+      .map((item) => ({ ...item, quantity: Math.min(10, Math.max(1, Math.trunc(item.quantity))) }));
+  } catch {
+    return [];
+  }
+}
 
 async function saveAction(kind: string, payload: Record<string, unknown>) {
   try {
@@ -420,7 +489,64 @@ async function compressProductImage(file: File) {
 export function TaibosiApp({ path, vehicleQuery = {} }: { path: string; vehicleQuery?: Partial<VehicleSelection> }) {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState("");
-  const [cartCount, setCartCount] = useState(1);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [cartReady, setCartReady] = useState(false);
+  const cartCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setCartItems(readStoredCart());
+      setCartReady(true);
+    });
+    const syncCart = (event: StorageEvent) => {
+      if (event.key === cartStorageKey) setCartItems(readStoredCart());
+    };
+    window.addEventListener("storage", syncCart);
+    return () => {
+      active = false;
+      window.removeEventListener("storage", syncCart);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!cartReady) return;
+    window.localStorage.setItem(cartStorageKey, JSON.stringify(cartItems));
+  }, [cartItems, cartReady]);
+
+  const addProductToCart = (product: Product, quantity: number, optionName: string) => {
+    setCartItems((current) => {
+      const index = current.findIndex((item) => item.sku === product.sku && item.optionName === optionName);
+      if (index >= 0) {
+        return current.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: Math.min(10, item.quantity + quantity) } : item);
+      }
+      return [...current, {
+        sku: product.sku,
+        slug: product.slug,
+        name: product.name,
+        price: product.price,
+        image: product.image,
+        fitment: product.fitment,
+        stock: product.stock,
+        optionName,
+        vehicleSnapshot: product.compatibleVehicles[0]?.replaceAll("|", " · ") ?? null,
+        quantity: Math.min(10, Math.max(1, quantity)),
+      }];
+    });
+    setToast("장바구니에 상품을 담았습니다.");
+  };
+  const updateCartQuantity = (sku: string, optionName: string, quantity: number) => {
+    setCartItems((current) => current.map((item) => item.sku === sku && item.optionName === optionName ? { ...item, quantity: Math.min(10, Math.max(1, quantity)) } : item));
+  };
+  const removeCartItem = (sku: string, optionName: string) => {
+    setCartItems((current) => current.filter((item) => item.sku !== sku || item.optionName !== optionName));
+    setToast("장바구니에서 상품을 삭제했습니다.");
+  };
+  const clearCart = () => {
+    setCartItems([]);
+    window.localStorage.removeItem(cartStorageKey);
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -446,23 +572,10 @@ export function TaibosiApp({ path, vehicleQuery = {} }: { path: string; vehicleQ
     if (path === "/products") return <ProductsPage vehicleQuery={vehicleQuery} />;
     if (path.startsWith("/products/")) {
       const slug = path.split("/").pop() ?? products[0].slug;
-      const staticProduct = products.find((item) => item.slug === slug);
-      if (!staticProduct) {
-        return <DatabaseProductDetailPage slug={slug} addToCart={() => { setCartCount((count) => count + 1); setToast("장바구니에 상품을 담았습니다."); }} showToast={setToast} />;
-      }
-      return (
-        <ProductDetailPage
-          product={staticProduct}
-          addToCart={() => {
-            setCartCount((count) => count + 1);
-            setToast("장바구니에 상품을 담았습니다.");
-          }}
-          showToast={setToast}
-        />
-      );
+      return <DatabaseProductDetailPage slug={slug} addToCart={addProductToCart} showToast={setToast} />;
     }
-    if (path === "/cart") return <CartPage />;
-    if (path === "/checkout") return <CheckoutPage showToast={setToast} />;
+    if (path === "/cart") return <CartPage items={cartItems} ready={cartReady} updateQuantity={updateCartQuantity} removeItem={removeCartItem} />;
+    if (path === "/checkout") return <CheckoutPage items={cartItems} ready={cartReady} clearCart={clearCart} showToast={setToast} />;
     if (path === "/checkout/complete") return <CompletePage />;
     if (path === "/installation" || path === "/installers" || path === "/installation/booking") {
       return <InstallationPage booking={path.endsWith("booking")} showToast={setToast} />;
@@ -477,22 +590,12 @@ export function TaibosiApp({ path, vehicleQuery = {} }: { path: string; vehicleQ
   return (
     <div className="storefront-shell">
       <a className="skip-link" href="#main-content">본문으로 건너뛰기</a>
-      <SampleBanner />
       <StoreHeader cartCount={cartCount} openMenu={() => setMobileMenu(true)} />
       {mobileMenu && <MobileMenu close={() => setMobileMenu(false)} />}
       <main id="main-content">{renderPage()}</main>
       <StoreFooter />
       {!path.startsWith("/checkout") && !path.startsWith("/products/") && <MobileBottomNav />}
       {toast && <div className="toast" role="status"><CheckCircle2 size={18} />{toast}</div>}
-    </div>
-  );
-}
-
-function SampleBanner() {
-  return (
-    <div className="sample-banner">
-      <span>DEMO ENVIRONMENT</span>
-      화면의 상품·장착점·일정은 기능 확인을 위한 샘플 데이터입니다.
     </div>
   );
 }
@@ -663,7 +766,7 @@ function HomePage() {
       <section className="section products-section">
         <div className="grid-container">
           <SectionHeading eyebrow="FEATURED SYSTEMS" title="차량별 추천 시스템" copy="BMW M3 G80 기준으로 확인된 대표 상품입니다." action="추천 상품 전체보기" href="/products" />
-          <div className="product-grid home-product-grid">{products.slice(0, 3).map((product) => <ProductCard key={product.slug} product={product} />)}</div>
+          <DatabaseFeaturedProducts />
         </div>
       </section>
 
@@ -752,6 +855,24 @@ function StockBadge({ stock }: { stock: Stock }) {
   return <span className={`status-badge ${item.className}`}><Icon />{item.label}</span>;
 }
 
+function DatabaseFeaturedProducts() {
+  const [featured, setFeatured] = useState<StoredProduct[] | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/products?scope=public", { cache: "no-store" })
+      .then(async (response) => {
+        const data = (await response.json()) as { products?: StoredProduct[] };
+        if (!response.ok) throw new Error("상품을 불러오지 못했습니다.");
+        if (active) setFeatured((data.products ?? []).slice(0, 3));
+      })
+      .catch(() => { if (active) setFeatured([]); });
+    return () => { active = false; };
+  }, []);
+  if (featured === null) return <div className="home-product-loading" role="status"><RotateCcw/>추천 상품을 불러오는 중입니다…</div>;
+  if (featured.length === 0) return <div className="home-product-loading"><Package/>공개된 상품이 없습니다.</div>;
+  return <div className="product-grid home-product-grid">{featured.map((product) => <ProductCard key={product.slug} product={storedProductToCatalogProduct(product)} />)}</div>;
+}
+
 function ProductCard({ product }: { product: Product }) {
   return (
     <article className="product-card">
@@ -831,30 +952,42 @@ function ProductsPage({ vehicleQuery }: { vehicleQuery: Partial<VehicleSelection
   const [stockFilter, setStockFilter] = useState<Stock | "ALL">("ALL");
   const [fitFilter, setFitFilter] = useState<Fitment | "ALL">("ALL");
   const [mobileFilter, setMobileFilter] = useState(false);
-  const [databaseProducts, setDatabaseProducts] = useState<StoredProduct[]>([]);
+  const [databaseProducts, setDatabaseProducts] = useState<StoredProduct[] | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const reloadProducts = () => {
+    setDatabaseProducts(null);
+    setLoadError("");
+    setReloadKey((value) => value + 1);
+  };
   useEffect(() => {
+    let active = true;
     fetch("/api/products?scope=public", { cache: "no-store" })
       .then(async (response) => {
-        const data = (await response.json()) as { products?: StoredProduct[] };
+        const data = (await response.json()) as { products?: StoredProduct[]; error?: string };
         if (!response.ok) throw new Error("Public products unavailable");
-        setDatabaseProducts(Array.isArray(data.products) ? data.products : []);
+        if (active) setDatabaseProducts(Array.isArray(data.products) ? data.products : []);
       })
-      .catch(() => setDatabaseProducts([]));
-  }, []);
+      .catch(() => {
+        if (!active) return;
+        setLoadError("등록 상품을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        setDatabaseProducts([]);
+      });
+    return () => { active = false; };
+  }, [reloadKey]);
   const hasVehicle = Boolean(vehicleQuery.maker && vehicleQuery.model && vehicleQuery.generation && vehicleGeneration({ maker: vehicleQuery.maker, model: vehicleQuery.model, generation: vehicleQuery.generation }));
   const selectedVehicleLabel = hasVehicle ? `${vehicleQuery.maker} ${vehicleQuery.model} ${vehicleQuery.generation}` : "차량 미선택";
   const selectedVehicleDetail = [vehicleQuery.year, vehicleQuery.engine, vehicleQuery.specification].filter(Boolean).join(" · ");
-  const databaseCatalogProducts = databaseProducts.map(storedProductToCatalogProduct);
-  const databaseIdentifiers = new Set(databaseCatalogProducts.flatMap((product) => [product.sku, product.slug]));
-  const catalogProducts = [...databaseCatalogProducts, ...products.filter((product) => !databaseIdentifiers.has(product.sku) && !databaseIdentifiers.has(product.slug))];
-  const vehicleProducts = hasVehicle ? catalogProducts.filter((product) => product.compatibleVehicles.includes(vehicleKey(vehicleQuery))) : catalogProducts;
+  const loading = databaseProducts === null;
+  const catalogProducts = (databaseProducts ?? []).map(storedProductToCatalogProduct);
+  const vehicleProducts = hasVehicle ? catalogProducts.filter((product) => product.compatibleVehicles.length === 0 || product.compatibleVehicles.includes(vehicleKey(vehicleQuery))) : catalogProducts;
   const visible = vehicleProducts.filter((product) => (stockFilter === "ALL" || product.stock === stockFilter) && (fitFilter === "ALL" || product.fitment === fitFilter));
   return (
     <div className="products-page page-light">
       <div className="grid-container page-top-space">
         <nav className="breadcrumb"><a href="/">홈</a><ChevronRight /><span>제품</span></nav>
-        <div className="products-title-row"><div><span className="eyebrow red">EXHAUST SYSTEMS</span><h1>배기 시스템</h1><p>선택한 차량과 재고 유형을 기준으로 비교해 보세요.</p></div><span><strong>{visible.length}</strong> PRODUCTS</span></div>
-        <div className={`selected-vehicle-bar ${hasVehicle ? "" : "unselected"}`}><div className="round-icon"><CarFront /></div><div><span>선택 차량</span><strong>{selectedVehicleLabel}{selectedVehicleDetail && ` · ${selectedVehicleDetail}`}</strong><small>{hasVehicle ? <><CheckCircle2 /> 이 차량에 등록된 호환 제품만 표시 중</> : <><Info /> 차량을 선택하면 호환 제품만 검색합니다</>}</small></div><a className="button secondary" href="/vehicles">{hasVehicle ? "차량 변경" : "차량 선택"}</a></div>
+        <div className="products-title-row"><div><span className="eyebrow red">EXHAUST SYSTEMS</span><h1>배기 시스템</h1><p>관리자가 등록하고 공개한 상품을 확인하세요.</p></div><span><strong>{loading ? "–" : visible.length}</strong> PRODUCTS</span></div>
+        <div className={`selected-vehicle-bar ${hasVehicle ? "" : "unselected"}`}><div className="round-icon"><CarFront /></div><div><span>선택 차량</span><strong>{selectedVehicleLabel}{selectedVehicleDetail && ` · ${selectedVehicleDetail}`}</strong><small>{hasVehicle ? <><CheckCircle2 /> 선택 차량 기준으로 상품별 적합성 상태를 확인하세요</> : <><Info /> 차량을 선택하면 상품별 적합성 상태를 함께 확인할 수 있습니다</>}</small></div><a className="button secondary" href="/vehicles">{hasVehicle ? "차량 변경" : "차량 선택"}</a></div>
         <div className="product-toolbar"><label className="search-field"><Search /><input placeholder="제품명, SKU 검색" aria-label="제품 검색" /></label><button className="button secondary mobile-filter-button" onClick={() => setMobileFilter(true)}><SlidersHorizontal />필터</button><label className="sort-select"><span>정렬</span><select><option>추천순</option><option>가격 낮은순</option><option>가격 높은순</option></select></label></div>
         <div className="product-catalog-layout">
           <aside className={`filter-sidebar ${mobileFilter ? "mobile-open" : ""}`}>
@@ -864,11 +997,15 @@ function ProductsPage({ vehicleQuery }: { vehicleQuery: Partial<VehicleSelection
             <FilterGroup title="시스템 유형"><FilterRadio label="Cat-back System" /><FilterRadio label="Axle-back System" /><FilterRadio label="Valved Exhaust" /><FilterRadio label="Exhaust Tip" /></FilterGroup>
             <button className="button primary full filter-apply" onClick={() => setMobileFilter(false)}>상품 {visible.length}개 보기</button>
           </aside>
-          <section><div className="active-filters">{hasVehicle && <span>{selectedVehicleLabel}<button aria-label="차량 필터 삭제" onClick={() => { window.location.href = "/products"; }}><X /></button></span>}{stockFilter !== "ALL" && <span>{stockMap[stockFilter].label}<button onClick={() => setStockFilter("ALL")}><X /></button></span>}<button onClick={() => { setStockFilter("ALL"); setFitFilter("ALL"); }}><RotateCcw /> 초기화</button></div>{visible.length ? <div className="product-grid catalog-grid">{visible.map((product) => <ProductCard key={product.slug} product={product} />)}</div> : <EmptyState icon={Search} title="선택한 차량에 등록된 제품이 없습니다" copy={`${selectedVehicleLabel} 호환 데이터가 아직 없거나 추가 확인이 필요합니다.`} action="차량 다시 선택" onAction={() => { window.location.href = "/vehicles"; }} />}</section>
+          <section><div className="active-filters">{hasVehicle && <span>{selectedVehicleLabel}<button aria-label="차량 필터 삭제" onClick={() => { window.location.href = "/products"; }}><X /></button></span>}{stockFilter !== "ALL" && <span>{stockMap[stockFilter].label}<button onClick={() => setStockFilter("ALL")}><X /></button></span>}<button onClick={() => { setStockFilter("ALL"); setFitFilter("ALL"); }}><RotateCcw /> 초기화</button></div>{loading ? <ProductCatalogLoading /> : loadError ? <EmptyState icon={RotateCcw} title="상품을 불러오지 못했습니다" copy={loadError} action="다시 시도" onAction={reloadProducts} /> : visible.length ? <div className="product-grid catalog-grid">{visible.map((product) => <ProductCard key={product.slug} product={product} />)}</div> : <EmptyState icon={Package} title="공개된 상품이 없습니다" copy="관리자에서 상품을 등록하고 공개하면 이곳에 표시됩니다." action="상품 다시 불러오기" onAction={reloadProducts} />}</section>
         </div>
       </div>
     </div>
   );
+}
+
+function ProductCatalogLoading() {
+  return <div className="catalog-loading" role="status" aria-live="polite"><div className="catalog-progress" aria-hidden="true"><span/></div><div className="catalog-loading-label"><RotateCcw/><span>등록 상품을 불러오는 중입니다…</span></div><div className="catalog-skeleton-grid" aria-hidden="true">{[0, 1, 2].map((item) => <div className="catalog-skeleton-card" key={item}><i/><span/><b/><small/></div>)}</div></div>;
 }
 
 function FilterGroup({ title, children }: { title: string; children: React.ReactNode }) {
@@ -879,7 +1016,7 @@ function FilterRadio({ label, checked = false, onClick }: { label: string; check
   return <button className={`filter-radio ${checked ? "checked" : ""}`} onClick={onClick}><span>{checked && <Check />}</span>{label}</button>;
 }
 
-function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: string; addToCart: () => void; showToast: (message: string) => void }) {
+function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: string; addToCart: (product: Product, quantity: number, optionName: string) => void; showToast: (message: string) => void }) {
   const [storedProduct, setStoredProduct] = useState<StoredProduct | null | undefined>(undefined);
   useEffect(() => {
     let active = true;
@@ -893,7 +1030,7 @@ function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: strin
     return () => { active = false; };
   }, [slug]);
   if (storedProduct === undefined) {
-    return <div className="page-light"><div className="grid-container page-top-space"><div className="empty-state"><Package/><h3>상품 정보를 불러오는 중입니다</h3></div></div></div>;
+    return <div className="page-light"><div className="grid-container page-top-space"><div className="detail-loading" role="status" aria-live="polite"><div className="catalog-progress" aria-hidden="true"><span/></div><Package/><h3>상품 상세 정보를 불러오는 중입니다…</h3><div><i/><span/></div></div></div></div>;
   }
   if (!storedProduct) {
     return <div className="page-light"><div className="grid-container page-top-space"><EmptyState icon={Package} title="상품을 찾을 수 없습니다" copy="비공개되었거나 삭제된 상품입니다." action="제품 목록으로" onAction={() => { window.location.href = "/products"; }}/></div></div>;
@@ -901,9 +1038,13 @@ function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: strin
   return <ProductDetailPage product={storedProductToCatalogProduct(storedProduct)} addToCart={addToCart} showToast={showToast} />;
 }
 
-function ProductDetailPage({ product, addToCart, showToast }: { product: Product; addToCart: () => void; showToast: (message: string) => void }) {
+function ProductDetailPage({ product, addToCart, showToast }: { product: Product; addToCart: (product: Product, quantity: number, optionName: string) => void; showToast: (message: string) => void }) {
   const [tip, setTip] = useState("Carbon Quad");
   const [quantity, setQuantity] = useState(1);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const galleryImages = product.images?.length ? product.images : [{ url: product.image, altText: `${product.name} 제품 이미지` }];
+  const previousImage = () => setGalleryIndex((index) => (index - 1 + galleryImages.length) % galleryImages.length);
+  const nextImage = () => setGalleryIndex((index) => (index + 1) % galleryImages.length);
   const fitment = fitmentMap[product.fitment];
   const stock = stockMap[product.stock];
   const FitIcon = fitment.icon;
@@ -914,13 +1055,13 @@ function ProductDetailPage({ product, addToCart, showToast }: { product: Product
       await saveAction("restock", { product: product.sku }); showToast("재입고 알림 신청을 접수했습니다.");
     } else if (product.fitment === "CONSULTATION_REQUIRED") {
       await saveAction("inquiry", { product: product.sku, vehicle: "BMW M3 G80" }); window.location.href = "/support/inquiry";
-    } else addToCart();
+    } else addToCart(product, quantity, `${tip} · Valve Controller`);
   };
   return (
     <div className="product-detail page-light">
       <div className="grid-container detail-top-space"><nav className="breadcrumb"><a href="/">홈</a><ChevronRight /><a href="/products">제품</a><ChevronRight /><span>{product.name}</span></nav>
         <div className="product-detail-grid">
-          <section className="product-gallery"><div className="gallery-main"><img src={product.image} alt={`${product.name} 장착 이미지`} /><span className="image-index">01 / 04</span><button className="gallery-arrow left" aria-label="이전 이미지"><ArrowLeft /></button><button className="gallery-arrow right" aria-label="다음 이미지"><ArrowRight /></button></div><div className="gallery-thumbs">{[product.image, garageImage, redBmwImage].map((image, index) => <button className={index === 0 ? "active" : ""} key={image}><img src={image} alt={`${product.name} 썸네일 ${index + 1}`} /></button>)}</div></section>
+          <section className="product-gallery"><div className="gallery-main"><img key={galleryImages[galleryIndex].url} src={galleryImages[galleryIndex].url} alt={galleryImages[galleryIndex].altText || `${product.name} 제품 이미지 ${galleryIndex + 1}`} /><span className="image-index">{String(galleryIndex + 1).padStart(2, "0")} / {String(galleryImages.length).padStart(2, "0")}</span><button className="gallery-arrow left" aria-label="이전 이미지" onClick={previousImage} disabled={galleryImages.length < 2}><ArrowLeft /></button><button className="gallery-arrow right" aria-label="다음 이미지" onClick={nextImage} disabled={galleryImages.length < 2}><ArrowRight /></button></div><div className="gallery-thumbs">{galleryImages.map((image, index) => <button className={index === galleryIndex ? "active" : ""} key={`${image.url}-${index}`} onClick={() => setGalleryIndex(index)} aria-label={`${index + 1}번 이미지 보기`} aria-pressed={index === galleryIndex}><img src={image.url} alt={image.altText || `${product.name} 썸네일 ${index + 1}`} /></button>)}</div></section>
           <aside className="purchase-panel"><span className="eyebrow red">{product.category}</span><h1>{product.name}</h1><p className="product-sku">SKU {product.sku}</p><div className="panel-badges"><FitmentBadge status={product.fitment} /><StockBadge stock={product.stock} /></div><div className="detail-price"><strong>{formatPrice(product.price)}</strong><span>원</span><small>장착비 별도 · 상담 후 안내</small></div>
             <div className={`fitment-panel ${fitment.className}`}><div><FitIcon /><strong>{fitment.label}</strong></div><p>{fitment.description}</p><span>{product.compatibleVehicles[0]?.replaceAll("|", " ") ?? "차량별 적합성 확인 필요"}</span><button>판단 근거 보기 <ChevronRight /></button></div>
             <div className={`stock-panel ${stock.className}`}><StockIcon /><div><strong>{stock.label}</strong><p>{stock.copy}</p></div></div>
@@ -931,8 +1072,8 @@ function ProductDetailPage({ product, addToCart, showToast }: { product: Product
         </div>
       </div>
       <nav className="detail-tabs"><div className="grid-container"><a href="#overview">제품 소개</a><a href="#sound">배기음</a><a href="#specs">기술 사양</a><a href="#fitment">장착 조건</a><a href="#policy">보증·반품</a></div></nav>
-      <section id="overview" className="section detail-story"><div className="grid-container story-grid"><div><span className="eyebrow red">ENGINEERED DETAIL</span><h2>정확한 라인,<br />절제된 존재감</h2><p>{product.kicker}. 차량 하부 구조와 순정 장착 포인트를 고려한 제품 구성을 확인하세요.</p></div><div className="story-image"><img src={garageImage} alt="배기 시스템 리어 디테일" /><span>SUS304</span></div></div></section>
-      <section id="sound" className="section detail-dark-block"><div className="grid-container"><SectionHeading eyebrow="SOUND SAMPLE" title="BMW G80 · Comfort / Sport" copy="녹음 환경과 재생 기기에 따라 실제 소리는 다르게 들릴 수 있습니다." /><SoundPlayer /></div></section>
+      <section id="overview" className="section detail-story"><div className="grid-container story-grid"><div><span className="eyebrow red">ENGINEERED DETAIL</span><h2>정확한 라인,<br />절제된 존재감</h2><p>{product.kicker}. 차량 하부 구조와 순정 장착 포인트를 고려한 제품 구성을 확인하세요.</p></div><div className="story-image"><img src={galleryImages[1]?.url ?? galleryImages[0].url} alt={galleryImages[1]?.altText || galleryImages[0].altText} /><span>{product.material.split(" · ")[0]}</span></div></div></section>
+      <section id="sound" className="section detail-dark-block"><div className="grid-container"><SectionHeading eyebrow="SOUND SAMPLE" title={`${product.name} · Sound Sample`} copy="녹음 환경과 재생 기기에 따라 실제 소리는 다르게 들릴 수 있습니다." /><SoundPlayer /></div></section>
       <section id="specs" className="section"><div className="grid-container spec-layout"><div><span className="eyebrow red">SPECIFICATIONS</span><h2>기술 사양</h2></div><dl className="spec-table"><div><dt>재질</dt><dd>{product.material.split(" · ")[0]}</dd></div><div><dt>시스템 구성</dt><dd>{product.category}</dd></div><div><dt>밸브</dt><dd>{product.category.includes("VALVED") ? "전자식 밸브 포함" : "해당 없음"}</dd></div><div><dt>팁 구성</dt><dd>{tip}</dd></div><div><dt>장착 시간</dt><dd>상담 후 안내</dd></div><div><dt>인증·구조변경</dt><dd>차량 사양과 지역 기준에 따라 별도 확인 필요</dd></div></dl></div></section>
       <section id="fitment" className="section detail-fitment-info"><div className="grid-container"><div className="notice-card"><CircleHelp /><div><h3>장착과 관련 규정은 차량별 확인이 필요합니다</h3><p>화면의 적합성은 등록된 제품·차량 데이터를 기준으로 하며 법적 적합성이나 성능 향상을 보장하지 않습니다.</p></div><a href="/support/inquiry">적합성 문의 <ArrowRight /></a></div></div></section>
       <div className="product-mobile-action"><div><span>{formatPrice(product.price)}원</span><small>{fitment.label}</small></div><button className="button primary" onClick={handleCta}>{cta}</button></div>
@@ -940,21 +1081,22 @@ function ProductDetailPage({ product, addToCart, showToast }: { product: Product
   );
 }
 
-function CartPage() {
-  const [qty, setQty] = useState(1);
-  const product = products[0];
+function CartPage({ items, ready, updateQuantity, removeItem }: { items: CartItem[]; ready: boolean; updateQuantity: (sku: string, optionName: string, quantity: number) => void; removeItem: (sku: string, optionName: string) => void }) {
+  const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const quantity = items.reduce((sum, item) => sum + item.quantity, 0);
   return (
-    <div className="cart-page page-light"><div className="grid-container narrow-page"><nav className="breadcrumb"><a href="/">홈</a><ChevronRight /><span>장바구니</span></nav><div className="page-title-simple"><h1>장바구니</h1><span>1개 상품</span></div><div className="checkout-layout"><section><div className="revalidation-note"><RotateCcw /><div><strong>가격·재고·적합성을 다시 확인했습니다</strong><span>방금 전 확인 · 결제 직전 한 번 더 확인합니다.</span></div></div><div className="cart-group"><div className="cart-group-head"><div><PackageCheck /><strong>국내 재고</strong></div><span>주문 확인 후 출고일 안내</span></div><article className="cart-item"><input type="checkbox" defaultChecked aria-label={`${product.name} 선택`} /><img src={product.image} alt={product.name} /><div className="cart-item-info"><div className="badge-row"><FitmentBadge status="VERIFIED" /></div><h3>{product.name}</h3><p>Carbon Quad · Valve Controller</p><span>BMW M3 G80 · 2022</span><div className="cart-item-bottom"><div className="quantity-control"><button onClick={() => setQty(Math.max(1, qty - 1))}><Minus /></button><span>{qty}</span><button onClick={() => setQty(qty + 1)}><Plus /></button></div><strong>{formatPrice(product.price * qty)}원</strong></div></div><button className="cart-delete" aria-label="상품 삭제"><X /></button></article></div><a className="text-link" href="/products"><ArrowLeft /> 쇼핑 계속하기</a></section><OrderSummary total={product.price * qty} actionHref="/checkout" action="주문하기" /></div></div></div>
+    <div className="cart-page page-light"><div className="grid-container narrow-page"><nav className="breadcrumb"><a href="/">홈</a><ChevronRight /><span>장바구니</span></nav><div className="page-title-simple"><h1>장바구니</h1><span>{ready ? `${quantity}개 상품` : "불러오는 중"}</span></div>{!ready ? <div className="cart-loading" role="status"><RotateCcw/>저장된 장바구니를 불러오는 중입니다…</div> : <div className="checkout-layout"><section>{items.length > 0 ? <><div className="revalidation-note"><RotateCcw /><div><strong>저장된 장바구니를 불러왔습니다</strong><span>상품 가격과 판매 상태는 주문 접수 시 서버에서 다시 확인합니다.</span></div></div><div className="cart-group"><div className="cart-group-head"><div><PackageCheck /><strong>장바구니 상품</strong></div><span>이 브라우저에 자동 저장됨</span></div>{items.map((item) => <article className="cart-item" key={`${item.sku}-${item.optionName}`}><input type="checkbox" checked readOnly aria-label={`${item.name} 선택`} /><img src={item.image} alt={item.name} /><div className="cart-item-info"><div className="badge-row"><FitmentBadge status={item.fitment} /></div><h3>{item.name}</h3><p>{item.optionName}</p><span>{item.vehicleSnapshot ?? `SKU ${item.sku}`}</span><div className="cart-item-bottom"><div className="quantity-control"><button onClick={() => updateQuantity(item.sku, item.optionName, item.quantity - 1)} aria-label={`${item.name} 수량 줄이기`}><Minus /></button><span>{item.quantity}</span><button onClick={() => updateQuantity(item.sku, item.optionName, item.quantity + 1)} aria-label={`${item.name} 수량 늘리기`}><Plus /></button></div><strong>{formatPrice(item.price * item.quantity)}원</strong></div></div><button className="cart-delete" aria-label={`${item.name} 삭제`} onClick={() => removeItem(item.sku, item.optionName)}><X /></button></article>)}</div></> : <div className="cart-empty"><ShoppingBag/><h2>장바구니가 비어 있습니다</h2><p>어드민에서 공개한 상품을 둘러보고 필요한 제품을 담아보세요.</p><a className="button primary" href="/products">상품 보러 가기 <ArrowRight/></a></div>}<a className="text-link" href="/products"><ArrowLeft /> 쇼핑 계속하기</a></section><OrderSummary total={total} actionHref="/checkout" action="주문하기" disabled={items.length === 0} /></div>}</div></div>
   );
 }
 
-function OrderSummary({ total, actionHref, action }: { total: number; actionHref: string; action: string }) {
-  return <aside className="order-summary"><h2>주문 요약</h2><dl><div><dt>상품 금액</dt><dd>{formatPrice(total)}원</dd></div><div><dt>배송비</dt><dd>무료</dd></div><div><dt>장착비</dt><dd>상담 후 안내</dd></div></dl><div className="summary-total"><span>결제 예정 금액</span><strong>{formatPrice(total)}<small>원</small></strong></div><a className="button primary full large" href={actionHref}>{action} <ArrowRight /></a><p><LockKeyhole /> 결제 정보는 안전하게 처리됩니다.</p></aside>;
+function OrderSummary({ total, actionHref, action, disabled = false }: { total: number; actionHref: string; action: string; disabled?: boolean }) {
+  return <aside className="order-summary"><h2>주문 요약</h2><dl><div><dt>상품 금액</dt><dd>{formatPrice(total)}원</dd></div><div><dt>배송비</dt><dd>무료</dd></div><div><dt>장착비</dt><dd>상담 후 안내</dd></div></dl><div className="summary-total"><span>결제 예정 금액</span><strong>{formatPrice(total)}<small>원</small></strong></div>{disabled ? <button className="button primary full large" disabled>주문할 상품이 없습니다</button> : <a className="button primary full large" href={actionHref}>{action} <ArrowRight /></a>}<p><LockKeyhole /> 상품 가격은 주문 시 다시 검증됩니다.</p></aside>;
 }
 
-function CheckoutPage({ showToast }: { showToast: (message: string) => void }) {
+function CheckoutPage({ items, ready, clearCart, showToast }: { items: CartItem[]; ready: boolean; clearCart: () => void; showToast: (message: string) => void }) {
   const [agree, setAgree] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const [form, setForm] = useState({
     customerName: "",
     customerPhone: "",
@@ -971,6 +1113,7 @@ function CheckoutPage({ showToast }: { showToast: (message: string) => void }) {
   const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
   const submit = async () => {
     if (processing) return;
+    if (!ready || items.length === 0) { showToast("장바구니에 주문할 상품이 없습니다."); return; }
     if (!agree) { showToast("필수 동의 항목을 확인해 주세요."); return; }
     if (!form.customerName || !form.customerPhone || !form.customerEmail || !form.recipientName || !form.recipientPhone || !form.postalCode || !form.addressLine1) {
       showToast("주문자와 배송지의 필수 정보를 입력해 주세요.");
@@ -985,10 +1128,12 @@ function CheckoutPage({ showToast }: { showToast: (message: string) => void }) {
         body: JSON.stringify({
           ...form,
           idempotencyKey: idempotencyKey.current,
-          productSku: products[0].sku,
-          quantity: 1,
-          optionName: "Carbon Quad · Valve Controller",
-          vehicleSnapshot: "BMW M3 G80 · 2022",
+          items: items.map((item) => ({
+            productSku: item.sku,
+            quantity: item.quantity,
+            optionName: item.optionName,
+            vehicleSnapshot: item.vehicleSnapshot,
+          })),
         }),
       });
       const data = (await response.json()) as { order?: StoredOrder; error?: string };
@@ -997,14 +1142,21 @@ function CheckoutPage({ showToast }: { showToast: (message: string) => void }) {
         setProcessing(false);
         return;
       }
+      clearCart();
       window.location.href = `/checkout/complete?order=${encodeURIComponent(data.order.orderNumber)}`;
     } catch {
       showToast("네트워크 연결을 확인한 뒤 다시 시도해 주세요.");
       setProcessing(false);
     }
   };
+  if (!ready) {
+    return <div className="checkout-page page-light"><div className="checkout-header"><div className="grid-container"><BrandMark dark /><ol><li className="done"><Check />장바구니</li><li className="active"><span>2</span>주문 접수</li><li><span>3</span>완료</li></ol><a href="/cart"><X /></a></div></div><div className="grid-container narrow-page"><div className="cart-loading" role="status"><RotateCcw/>저장된 주문 상품을 불러오는 중입니다…</div></div></div>;
+  }
+  if (items.length === 0) {
+    return <div className="checkout-page page-light"><div className="checkout-header"><div className="grid-container"><BrandMark dark /><ol><li className="done"><Check />장바구니</li><li className="active"><span>2</span>주문 접수</li><li><span>3</span>완료</li></ol><a href="/cart"><X /></a></div></div><div className="grid-container narrow-page"><div className="cart-empty"><ShoppingBag/><h2>주문할 상품이 없습니다</h2><p>장바구니에 상품을 담은 뒤 주문을 진행해 주세요.</p><a className="button primary" href="/products">상품 보러 가기 <ArrowRight/></a></div></div></div>;
+  }
   return (
-    <div className="checkout-page page-light"><div className="checkout-header"><div className="grid-container"><BrandMark dark /><ol><li className="done"><Check />장바구니</li><li className="active"><span>2</span>주문 접수</li><li><span>3</span>완료</li></ol><a href="/cart"><X /></a></div></div><div className="grid-container narrow-page checkout-body"><h1>주문 정보</h1><div className="checkout-layout"><div className="checkout-sections"><CheckoutSection number="01" title="주문자 정보"><div className="form-grid"><Field label="이름" placeholder="홍길동" value={form.customerName} onValueChange={(value) => update("customerName", value)} /><Field label="연락처" placeholder="010-0000-0000" type="tel" value={form.customerPhone} onValueChange={(value) => update("customerPhone", value)} /><Field label="이메일" placeholder="name@example.com" type="email" value={form.customerEmail} onValueChange={(value) => update("customerEmail", value)} wide /></div></CheckoutSection><CheckoutSection number="02" title="배송지"><div className="form-grid"><Field label="받는 분" placeholder="홍길동" value={form.recipientName} onValueChange={(value) => update("recipientName", value)} /><Field label="연락처" placeholder="010-0000-0000" type="tel" value={form.recipientPhone} onValueChange={(value) => update("recipientPhone", value)} /><Field label="우편번호" placeholder="우편번호 입력" value={form.postalCode} onValueChange={(value) => update("postalCode", value)} /><Field label="주소" placeholder="기본 주소 입력" value={form.addressLine1} onValueChange={(value) => update("addressLine1", value)} /><Field label="상세 주소" placeholder="상세 주소 입력" value={form.addressLine2} onValueChange={(value) => update("addressLine2", value)} wide /></div></CheckoutSection><CheckoutSection number="03" title="수령 방식"><div className="choice-grid"><label className={`choice-card ${form.fulfillmentMethod === "INSTALLER_DELIVERY" ? "selected" : ""}`}><input type="radio" name="install" checked={form.fulfillmentMethod === "INSTALLER_DELIVERY"} onChange={() => update("fulfillmentMethod", "INSTALLER_DELIVERY")} /><Store /><strong>장착점으로 배송</strong><span>구매 후 장착 예약 신청</span>{form.fulfillmentMethod === "INSTALLER_DELIVERY" && <CheckCircle2 />}</label><label className={`choice-card ${form.fulfillmentMethod === "STANDARD_DELIVERY" ? "selected" : ""}`}><input type="radio" name="install" checked={form.fulfillmentMethod === "STANDARD_DELIVERY"} onChange={() => update("fulfillmentMethod", "STANDARD_DELIVERY")} /><Truck /><strong>일반 배송</strong><span>입력한 주소로 배송</span>{form.fulfillmentMethod === "STANDARD_DELIVERY" && <CheckCircle2 />}</label></div></CheckoutSection><CheckoutSection number="04" title="결제 방법"><div className="payment-options"><button className={form.paymentMethod === "CARD" ? "selected" : ""} onClick={() => update("paymentMethod", "CARD")}>신용·체크카드 {form.paymentMethod === "CARD" && <Check />}</button><button className={form.paymentMethod === "EASY_PAY" ? "selected" : ""} onClick={() => update("paymentMethod", "EASY_PAY")}>간편결제 {form.paymentMethod === "EASY_PAY" && <Check />}</button><button className={form.paymentMethod === "BANK_TRANSFER" ? "selected" : ""} onClick={() => update("paymentMethod", "BANK_TRANSFER")}>무통장입금 {form.paymentMethod === "BANK_TRANSFER" && <Check />}</button></div><p className="payment-disclaimer"><Info /> 현재 PG가 연결되지 않아 주문 접수 후 결제 확인 대기 상태로 저장됩니다.</p></CheckoutSection><CheckoutSection number="05" title="약관 동의"><label className="consent-all"><input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} /><span><Check /></span><strong>필수 약관에 모두 동의합니다</strong></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 구매조건 및 주문 진행 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 개인정보 수집·이용 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" /><span>[선택] 장착 정보 및 혜택 알림 동의</span><a href="#">보기</a></label></CheckoutSection></div><aside className="order-summary checkout-summary"><h2>주문 상품</h2><div className="summary-product"><img src={products[0].image} alt={products[0].name} /><div><strong>{products[0].name}</strong><span>Carbon Quad · 1개</span></div></div><dl><div><dt>상품 금액</dt><dd>3,200,000원</dd></div><div><dt>배송비</dt><dd>무료</dd></div><div><dt>장착비</dt><dd>상담 후 안내</dd></div></dl><div className="summary-total"><span>주문 금액</span><strong>3,200,000<small>원</small></strong></div><button className="button primary full large" disabled={processing} onClick={submit}>{processing ? "DB에 주문 저장 중…" : "3,200,000원 주문 접수"}</button><p><LockKeyhole /> 중복 요청은 주문 키로 차단됩니다.</p></aside></div></div><div className="checkout-mobile-action"><div><span>주문 금액</span><strong>3,200,000원</strong></div><button className="button primary" onClick={submit} disabled={processing}>{processing ? "저장 중…" : "주문 접수"}</button></div></div>
+    <div className="checkout-page page-light"><div className="checkout-header"><div className="grid-container"><BrandMark dark /><ol><li className="done"><Check />장바구니</li><li className="active"><span>2</span>주문 접수</li><li><span>3</span>완료</li></ol><a href="/cart"><X /></a></div></div><div className="grid-container narrow-page checkout-body"><h1>주문 정보</h1><div className="checkout-layout"><div className="checkout-sections"><CheckoutSection number="01" title="주문자 정보"><div className="form-grid"><Field label="이름" placeholder="홍길동" value={form.customerName} onValueChange={(value) => update("customerName", value)} /><Field label="연락처" placeholder="010-0000-0000" type="tel" value={form.customerPhone} onValueChange={(value) => update("customerPhone", value)} /><Field label="이메일" placeholder="name@example.com" type="email" value={form.customerEmail} onValueChange={(value) => update("customerEmail", value)} wide /></div></CheckoutSection><CheckoutSection number="02" title="배송지"><div className="form-grid"><Field label="받는 분" placeholder="홍길동" value={form.recipientName} onValueChange={(value) => update("recipientName", value)} /><Field label="연락처" placeholder="010-0000-0000" type="tel" value={form.recipientPhone} onValueChange={(value) => update("recipientPhone", value)} /><Field label="우편번호" placeholder="우편번호 입력" value={form.postalCode} onValueChange={(value) => update("postalCode", value)} /><Field label="주소" placeholder="기본 주소 입력" value={form.addressLine1} onValueChange={(value) => update("addressLine1", value)} /><Field label="상세 주소" placeholder="상세 주소 입력" value={form.addressLine2} onValueChange={(value) => update("addressLine2", value)} wide /></div></CheckoutSection><CheckoutSection number="03" title="수령 방식"><div className="choice-grid"><label className={`choice-card ${form.fulfillmentMethod === "INSTALLER_DELIVERY" ? "selected" : ""}`}><input type="radio" name="install" checked={form.fulfillmentMethod === "INSTALLER_DELIVERY"} onChange={() => update("fulfillmentMethod", "INSTALLER_DELIVERY")} /><Store /><strong>장착점으로 배송</strong><span>구매 후 장착 예약 신청</span>{form.fulfillmentMethod === "INSTALLER_DELIVERY" && <CheckCircle2 />}</label><label className={`choice-card ${form.fulfillmentMethod === "STANDARD_DELIVERY" ? "selected" : ""}`}><input type="radio" name="install" checked={form.fulfillmentMethod === "STANDARD_DELIVERY"} onChange={() => update("fulfillmentMethod", "STANDARD_DELIVERY")} /><Truck /><strong>일반 배송</strong><span>입력한 주소로 배송</span>{form.fulfillmentMethod === "STANDARD_DELIVERY" && <CheckCircle2 />}</label></div></CheckoutSection><CheckoutSection number="04" title="결제 방법"><div className="payment-options"><button className={form.paymentMethod === "CARD" ? "selected" : ""} onClick={() => update("paymentMethod", "CARD")}>신용·체크카드 {form.paymentMethod === "CARD" && <Check />}</button><button className={form.paymentMethod === "EASY_PAY" ? "selected" : ""} onClick={() => update("paymentMethod", "EASY_PAY")}>간편결제 {form.paymentMethod === "EASY_PAY" && <Check />}</button><button className={form.paymentMethod === "BANK_TRANSFER" ? "selected" : ""} onClick={() => update("paymentMethod", "BANK_TRANSFER")}>무통장입금 {form.paymentMethod === "BANK_TRANSFER" && <Check />}</button></div><p className="payment-disclaimer"><Info /> 현재 PG가 연결되지 않아 주문 접수 후 결제 확인 대기 상태로 저장됩니다.</p></CheckoutSection><CheckoutSection number="05" title="약관 동의"><label className="consent-all"><input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} /><span><Check /></span><strong>필수 약관에 모두 동의합니다</strong></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 구매조건 및 주문 진행 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 개인정보 수집·이용 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" /><span>[선택] 장착 정보 및 혜택 알림 동의</span><a href="#">보기</a></label></CheckoutSection></div><aside className="order-summary checkout-summary"><h2>주문 상품</h2><div className="summary-product-list">{items.map((item) => <div className="summary-product" key={`${item.sku}-${item.optionName}`}><img src={item.image} alt={item.name} /><div><strong>{item.name}</strong><span>{item.optionName} · {item.quantity}개</span></div></div>)}</div><dl><div><dt>상품 금액</dt><dd>{formatPrice(total)}원</dd></div><div><dt>배송비</dt><dd>무료</dd></div><div><dt>장착비</dt><dd>상담 후 안내</dd></div></dl><div className="summary-total"><span>주문 금액</span><strong>{formatPrice(total)}<small>원</small></strong></div><button className="button primary full large" disabled={processing} onClick={submit}>{processing ? "DB에 주문 저장 중…" : `${formatPrice(total)}원 주문 접수`}</button><p><LockKeyhole /> 상품 가격과 판매 상태는 서버에서 다시 검증됩니다.</p></aside></div></div><div className="checkout-mobile-action"><div><span>주문 금액</span><strong>{formatPrice(total)}원</strong></div><button className="button primary" onClick={submit} disabled={processing}>{processing ? "저장 중…" : "주문 접수"}</button></div></div>
   );
 }
 
@@ -1051,9 +1203,49 @@ function InstallationPage({ booking, showToast }: { booking: boolean; showToast:
 function SupportPage({ path, showToast }: { path: string; showToast: (message: string) => void }) {
   const isForm = path.includes("inquiry") || path.includes("return") || path.includes("warranty");
   const [openFaq, setOpenFaq] = useState(0);
-  const submit = async () => { await saveAction("support", { type: path.split("/").pop(), product: products[0].sku, vehicle: "BMW M3 G80" }); showToast("문의가 접수되었습니다. 마이페이지에서 상태를 확인할 수 있습니다."); };
+  const defaultType = path.includes("return") ? "RETURN_EXCHANGE" : path.includes("warranty") ? "WARRANTY_AS" : "FITMENT";
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState("");
+  const [receipt, setReceipt] = useState("");
+  const [form, setForm] = useState({
+    type: defaultType,
+    customerName: "",
+    customerEmail: "",
+    customerPhone: "",
+    subject: "",
+    body: "",
+  });
+  const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async () => {
+    if (processing) return;
+    setError("");
+    if (form.customerName.trim().length < 2 || !/^\S+@\S+\.\S+$/.test(form.customerEmail.trim()) || form.customerPhone.trim().length < 8 || form.subject.trim().length < 2 || form.body.trim().length < 5) {
+      setError("이름, 이메일, 연락처, 제목과 문의 내용을 모두 정확히 입력해 주세요.");
+      return;
+    }
+    setProcessing(true);
+    try {
+      const response = await fetch("/api/inquiries", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...form, sourcePath: path }),
+      });
+      const data = (await response.json()) as { inquiry?: StoredInquiry; error?: string };
+      if (!response.ok || !data.inquiry) {
+        setError(data.error ?? "문의를 접수하지 못했습니다.");
+        return;
+      }
+      setReceipt(data.inquiry.inquiryNumber);
+      setForm((current) => ({ ...current, customerName: "", customerEmail: "", customerPhone: "", subject: "", body: "" }));
+      showToast("문의가 정상적으로 접수되었습니다.");
+    } catch {
+      setError("네트워크 연결을 확인한 뒤 다시 시도해 주세요.");
+    } finally {
+      setProcessing(false);
+    }
+  };
   return (
-    <div className="support-page page-light"><div className="page-hero compact dark-hero"><div className="grid-container"><span className="eyebrow red">CUSTOMER SUPPORT</span><h1>{isForm ? "문의 접수" : "무엇을 도와드릴까요?"}</h1><p>제품, 적합성, 주문, 장착, AS 문의를 국내 운영팀에 남겨주세요.</p></div></div><div className="grid-container support-content">{isForm ? <div className="support-form-layout"><section className="support-form"><div className="attached-context"><span>자동 첨부 정보</span><div><img src={products[0].image} alt={products[0].name}/><p><strong>{products[0].name}</strong><small>BMW M3 G80 · 장착 확인 · Carbon Quad</small></p><CheckCircle2 /></div></div><div className="form-grid"><label><span>문의 유형</span><select><option>차량 적합성 문의</option><option>장착 조건 문의</option><option>주문·배송 문의</option><option>AS 문의</option></select></label><Field label="연락처" placeholder="010-0000-0000"/><Field label="제목" placeholder="문의 제목을 입력해 주세요" wide/><label className="wide"><span>문의 내용</span><textarea placeholder="차량 세부 사양과 궁금한 점을 남겨주세요."/></label><label className="wide file-upload"><span>첨부 파일</span><button><Plus/>사진 또는 파일 추가</button><small>차량 등록증은 개인정보를 가린 뒤 첨부해 주세요.</small></label></div><button className="button primary large" onClick={submit}>문의 접수하기 <ArrowRight /></button></section><aside className="support-side"><Headphones/><h3>접수 전 확인해 주세요</h3><p>차대번호는 선택 정보이며, 필요한 경우 담당자가 별도로 요청할 수 있습니다.</p><a href="/support/faq">자주 묻는 질문 <ArrowRight/></a></aside></div> : <><div className="support-quick-grid"><a href="/support/faq"><CircleHelp/><strong>자주 묻는 질문</strong><span>제품·주문·장착 안내</span><ChevronRight/></a><a href="/support/inquiry"><MessageCircle/><strong>1:1 문의</strong><span>차량 정보와 함께 접수</span><ChevronRight/></a><a href="/support/return"><RotateCcw/><strong>반품·교환</strong><span>정책과 신청 절차</span><ChevronRight/></a><a href="/support/warranty"><ShieldCheck/><strong>보증·AS</strong><span>보증 범위와 접수</span><ChevronRight/></a></div><section className="faq-section"><div><span className="eyebrow red">FAQ</span><h2>자주 묻는 질문</h2></div><div className="faq-list">{["내 차량에 장착 가능한지 어떻게 확인하나요?", "해외발주 상품의 일정은 언제 알 수 있나요?", "장착비는 상품 가격에 포함되나요?", "구조변경이나 소음 기준을 보장하나요?"].map((question, index) => <article key={question} className={openFaq === index ? "open" : ""}><button onClick={() => setOpenFaq(openFaq === index ? -1 : index)}><span>0{index + 1}</span><strong>{question}</strong><Plus/></button>{openFaq === index && <p>{index === 0 ? "차량을 선택하면 등록된 적합성 상태와 판단 근거를 함께 보여드립니다. 데이터가 부족한 경우 상담으로 연결합니다." : "확정된 데이터가 있는 범위만 안내하며, 임의의 기간이나 법적 보장을 표시하지 않습니다."}</p>}</article>)}</div></section></>}</div></div>
+    <div className="support-page page-light"><div className="page-hero compact dark-hero"><div className="grid-container"><span className="eyebrow red">CUSTOMER SUPPORT</span><h1>{isForm ? "문의 접수" : "무엇을 도와드릴까요?"}</h1><p>제품, 적합성, 주문, 장착, AS 문의를 국내 운영팀에 남겨주세요.</p></div></div><div className="grid-container support-content">{isForm ? <div className="support-form-layout"><section className="support-form">{receipt && <div className="support-receipt" role="status"><CheckCircle2/><div><strong>문의가 정상적으로 접수되었습니다</strong><span>접수번호 {receipt}</span></div></div>}{error && <div className="support-form-error" role="alert"><AlertTriangle/>{error}</div>}<div className="form-grid"><label><span>문의 유형</span><select value={form.type} onChange={(event) => update("type", event.target.value)}><option value="FITMENT">차량 적합성 문의</option><option value="INSTALLATION">장착 조건 문의</option><option value="ORDER_DELIVERY">주문·배송 문의</option><option value="WARRANTY_AS">보증·AS 문의</option><option value="RETURN_EXCHANGE">반품·교환 문의</option><option value="OTHER">기타 문의</option></select></label><Field label="이름" placeholder="이름을 입력해 주세요" value={form.customerName} onValueChange={(value) => update("customerName", value)}/><Field label="이메일" placeholder="name@example.com" type="email" value={form.customerEmail} onValueChange={(value) => update("customerEmail", value)}/><Field label="연락처" placeholder="010-0000-0000" type="tel" value={form.customerPhone} onValueChange={(value) => update("customerPhone", value)}/><Field label="제목" placeholder="문의 제목을 입력해 주세요" value={form.subject} onValueChange={(value) => update("subject", value)} wide/><label className="wide"><span>문의 내용</span><textarea value={form.body} onChange={(event) => update("body", event.target.value)} maxLength={5000} placeholder="차량 세부 사양과 궁금한 점을 남겨주세요."/><small className="field-counter">{form.body.length}/5,000</small></label><div className="wide support-attachment-note"><Info/><span>파일 첨부는 준비 중입니다. 필요한 사진은 접수 후 담당자가 별도로 안내합니다.</span></div></div><button className="button primary large" disabled={processing} onClick={submit}>{processing ? "문의 저장 중…" : "문의 접수하기"} {!processing && <ArrowRight />}</button></section><aside className="support-side"><Headphones/><h3>접수 전 확인해 주세요</h3><p>접수된 내용은 PostgreSQL에 저장되며 운영자가 문의·AS 화면에서 확인합니다. 차대번호는 담당자가 필요한 경우 별도로 요청합니다.</p><a href="/support/faq">자주 묻는 질문 <ArrowRight/></a></aside></div> : <><div className="support-quick-grid"><a href="/support/faq"><CircleHelp/><strong>자주 묻는 질문</strong><span>제품·주문·장착 안내</span><ChevronRight/></a><a href="/support/inquiry"><MessageCircle/><strong>1:1 문의</strong><span>차량 정보와 함께 접수</span><ChevronRight/></a><a href="/support/return"><RotateCcw/><strong>반품·교환</strong><span>정책과 신청 절차</span><ChevronRight/></a><a href="/support/warranty"><ShieldCheck/><strong>보증·AS</strong><span>보증 범위와 접수</span><ChevronRight/></a></div><section className="faq-section"><div><span className="eyebrow red">FAQ</span><h2>자주 묻는 질문</h2></div><div className="faq-list">{["내 차량에 장착 가능한지 어떻게 확인하나요?", "해외발주 상품의 일정은 언제 알 수 있나요?", "장착비는 상품 가격에 포함되나요?", "구조변경이나 소음 기준을 보장하나요?"].map((question, index) => <article key={question} className={openFaq === index ? "open" : ""}><button onClick={() => setOpenFaq(openFaq === index ? -1 : index)}><span>0{index + 1}</span><strong>{question}</strong><Plus/></button>{openFaq === index && <p>{index === 0 ? "차량을 선택하면 등록된 적합성 상태와 판단 근거를 함께 보여드립니다. 데이터가 부족한 경우 상담으로 연결합니다." : "확정된 데이터가 있는 범위만 안내하며, 임의의 기간이나 법적 보장을 표시하지 않습니다."}</p>}</article>)}</div></section></>}</div></div>
   );
 }
 
@@ -1157,7 +1349,7 @@ function AdminLogin() {
 }
 
 function AdminSidebar({ path }: { path: string }) {
-  return <aside className="admin-sidebar"><div className="admin-logo"><BrandMark/><span>OPERATIONS</span></div><nav>{adminNav.map((group) => <div key={group.group}><span>{group.group}</span>{group.items.map(([href, label, Icon]) => <a href={href} className={(href === "/admin" ? path === href : path.startsWith(href)) ? "active" : ""} key={href}><Icon/>{label}{label === "문의·AS" && <b>3</b>}</a>)}</div>)}</nav><div className="admin-user"><span>AK</span><div><strong>김아라</strong><small>Super Admin</small></div><ChevronRight/></div></aside>;
+  return <aside className="admin-sidebar"><div className="admin-logo"><BrandMark/><span>OPERATIONS</span></div><nav>{adminNav.map((group) => <div key={group.group}><span>{group.group}</span>{group.items.map(([href, label, Icon]) => <a href={href} className={(href === "/admin" ? path === href : path.startsWith(href)) ? "active" : ""} key={href}><Icon/>{label}</a>)}</div>)}</nav><div className="admin-user"><span>AK</span><div><strong>김아라</strong><small>Super Admin</small></div><ChevronRight/></div></aside>;
 }
 
 function AdminTopbar({ showToast }: { showToast: (message: string) => void }) {
@@ -1340,30 +1532,36 @@ function AdminModule({ path, showToast }: { path: string; showToast: (message: s
   const [drawerOpen, setDrawerOpen] = useState(isDetail);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<StoredOrder | null>(null);
+  const [selectedInquiry, setSelectedInquiry] = useState<StoredInquiry | null>(null);
   const submitChange = async () => { await saveAction(key === "inventory" ? "inventory" : "fitment", { module: key, reason: "샘플 운영 검증", actor: "김아라" }); setDialogOpen(false); showToast("변경 내용과 사유를 저장하고 감사 로그를 생성했습니다."); };
   if (key === "roles") return <PermissionModule meta={meta} showToast={showToast}/>;
   if (key === "fitments") return <FitmentModule meta={meta} showToast={showToast}/>;
   if (key === "products" && path.endsWith("/new")) return <ProductCreateModule showToast={showToast}/>;
-  return <><AdminPageHeader eyebrow={meta.eyebrow} title={meta.title} copy={meta.copy} actions={<><button className="admin-button secondary"><SlidersHorizontal/>보기 설정</button><button className="admin-button primary" onClick={() => key === "inventory" ? setDialogOpen(true) : key === "orders" ? window.location.reload() : key === "products" ? window.location.href = "/admin/products/new" : setDrawerOpen(true)}>{key === "orders" ? <RotateCcw/> : <Plus/>}{key === "orders" ? "주문 새로고침" : meta.action}</button></>}/><div className="admin-filter-bar"><label><Search/><input placeholder={`${meta.title} 검색`}/></label><button>상태 <ChevronDown/></button><button>업데이트일 <ChevronDown/></button><span>필터 0개</span><button className="filter-reset"><RotateCcw/>초기화</button></div><section className="admin-table-card"><div className="table-meta"><strong>{key === "orders" ? "PostgreSQL 실시간 주문" : key === "products" ? "PostgreSQL 실시간 상품" : "전체 32개"}</strong><div><button>열 표시 <ChevronDown/></button><button>내보내기</button></div></div><AdminTable module={key} onOpen={(order) => { setSelectedOrder(order ?? null); setDrawerOpen(true); }}/></section>{drawerOpen && <DetailDrawer module={key} order={selectedOrder} close={() => setDrawerOpen(false)} onChange={() => setDialogOpen(true)}/>} {dialogOpen && <ReasonDialog module={key} close={() => setDialogOpen(false)} submit={submitChange}/>}</>;
+  const refreshable = key === "orders" || key === "support";
+  return <><AdminPageHeader eyebrow={meta.eyebrow} title={meta.title} copy={meta.copy} actions={<><button className="admin-button secondary"><SlidersHorizontal/>보기 설정</button><button className="admin-button primary" onClick={() => key === "inventory" ? setDialogOpen(true) : refreshable ? window.location.reload() : key === "products" ? window.location.href = "/admin/products/new" : setDrawerOpen(true)}>{refreshable ? <RotateCcw/> : <Plus/>}{key === "orders" ? "주문 새로고침" : key === "support" ? "문의 새로고침" : meta.action}</button></>}/><div className="admin-filter-bar"><label><Search/><input placeholder={`${meta.title} 검색`}/></label><button>상태 <ChevronDown/></button><button>업데이트일 <ChevronDown/></button><span>필터 0개</span><button className="filter-reset"><RotateCcw/>초기화</button></div><section className="admin-table-card"><div className="table-meta"><strong>{key === "orders" ? "PostgreSQL 실시간 주문" : key === "products" ? "PostgreSQL 실시간 상품" : key === "support" ? "PostgreSQL 실시간 문의" : "전체 32개"}</strong><div><button>열 표시 <ChevronDown/></button><button>내보내기</button></div></div><AdminTable module={key} onOpen={(record) => { if (key === "orders") setSelectedOrder((record as StoredOrder | undefined) ?? null); if (key === "support") setSelectedInquiry((record as StoredInquiry | undefined) ?? null); setDrawerOpen(true); }}/></section>{drawerOpen && <DetailDrawer module={key} order={selectedOrder} inquiry={selectedInquiry} close={() => setDrawerOpen(false)} onChange={() => setDialogOpen(true)}/>} {dialogOpen && <ReasonDialog module={key} close={() => setDialogOpen(false)} submit={submitChange}/>}</>;
 }
 
-function AdminTable({ module = "orders", compact = false, onOpen }: { module?: string; compact?: boolean; onOpen?: (order?: StoredOrder) => void }) {
+function AdminTable({ module = "orders", compact = false, onOpen }: { module?: string; compact?: boolean; onOpen?: (record?: StoredOrder | StoredInquiry) => void }) {
   const [storedOrders, setStoredOrders] = useState<StoredOrder[] | null>(module === "orders" ? null : []);
   const [storedProducts, setStoredProducts] = useState<StoredProduct[] | null>(module === "products" ? null : []);
+  const [storedInquiries, setStoredInquiries] = useState<StoredInquiry[] | null>(module === "support" ? null : []);
   const [loadError, setLoadError] = useState("");
   useEffect(() => {
-    if (module !== "orders" && module !== "products") return;
-    fetch(module === "orders" ? `/api/orders?limit=${compact ? 4 : 100}` : "/api/products")
+    if (module !== "orders" && module !== "products" && module !== "support") return;
+    const endpoint = module === "orders" ? `/api/orders?limit=${compact ? 4 : 100}` : module === "products" ? "/api/products" : `/api/inquiries?limit=${compact ? 4 : 100}`;
+    fetch(endpoint, { cache: "no-store" })
       .then(async (response) => {
-        const data = (await response.json()) as { orders?: StoredOrder[]; products?: StoredProduct[]; error?: string };
-        if (!response.ok) throw new Error(data.error ?? (module === "orders" ? "주문을 불러오지 못했습니다." : "상품을 불러오지 못했습니다."));
+        const data = (await response.json()) as { orders?: StoredOrder[]; products?: StoredProduct[]; inquiries?: StoredInquiry[]; error?: string };
+        if (!response.ok) throw new Error(data.error ?? (module === "orders" ? "주문을 불러오지 못했습니다." : module === "products" ? "상품을 불러오지 못했습니다." : "문의를 불러오지 못했습니다."));
         if (module === "orders") setStoredOrders(Array.isArray(data.orders) ? data.orders : []);
         if (module === "products") setStoredProducts(Array.isArray(data.products) ? data.products : []);
+        if (module === "support") setStoredInquiries(Array.isArray(data.inquiries) ? data.inquiries : []);
       })
       .catch((reason: unknown) => {
         setLoadError(reason instanceof Error ? reason.message : "데이터를 불러오지 못했습니다.");
         setStoredOrders([]);
         setStoredProducts([]);
+        setStoredInquiries([]);
       });
   }, [compact, module]);
   const staticData = module === "inventory" ? [
@@ -1389,16 +1587,25 @@ function AdminTable({ module = "orders", compact = false, onOpen }: { module?: s
     `${formatPrice(product.price)}원`,
     product.status === "PUBLISHED" ? "공개" : "임시저장",
     new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", timeZone: "Asia/Seoul" }).format(new Date(product.updatedAt)),
+  ]) : module === "support" ? (storedInquiries ?? []).map((inquiry) => [
+    inquiry.inquiryNumber,
+    `${inquiry.customerName} · ${inquiry.customerEmail}`,
+    inquiry.subject,
+    inquiryTypeLabels[inquiry.type] ?? inquiry.type,
+    inquiryStatusLabels[inquiry.status] ?? inquiry.status,
+    new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Seoul" }).format(new Date(inquiry.createdAt)),
   ]) : staticData;
-  const headers = module === "inventory" ? ["SKU", "상품", "실재고", "예약", "가용", "상태"] : module === "products" ? ["SKU", "상품명", "유형", "판매가", "상태", "수정일"] : module === "audit-logs" ? ["일시", "작업자", "행동", "대상", "변경", "사유"] : ["주문번호", "고객", "상품", "결제금액", "상태", "접수"];
-  const loading = (module === "orders" && storedOrders === null) || (module === "products" && storedProducts === null);
-  const emptyCopy = module === "orders" ? "아직 접수된 주문이 없습니다." : module === "products" ? "아직 등록된 상품이 없습니다. 상품 등록 버튼으로 첫 상품을 추가하세요." : "표시할 데이터가 없습니다.";
-  return <div className="admin-table-wrap"><table className={compact ? "compact" : ""}><thead><tr><th><input type="checkbox" aria-label="전체 선택"/></th>{headers.map((header)=><th key={header}>{header}<ChevronDown/></th>)}<th/></tr></thead><tbody>{loading ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>PostgreSQL 데이터를 불러오는 중입니다…</td></tr> : loadError ? <tr><td className="admin-table-state error" colSpan={headers.length + 2}>{loadError}</td></tr> : data.length === 0 ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>{emptyCopy}</td></tr> : data.slice(0,compact?4:data.length).map((row,index)=><tr key={row[0]} onClick={() => module === "products" ? undefined : onOpen?.(module === "orders" ? storedOrders?.[index] : undefined)}><td><input type="checkbox" aria-label={`${row[0]} 선택`} onClick={(event) => event.stopPropagation()}/></td>{row.map((cell,cellIndex)=><td key={cellIndex}>{cellIndex===0?<strong>{cell}</strong>:cellIndex===4?<span className={`table-status s${index % 4}`}>{cell}</span>:cell}</td>)}<td><button aria-label="행 메뉴">•••</button></td></tr>)}</tbody></table></div>;
+  const headers = module === "inventory" ? ["SKU", "상품", "실재고", "예약", "가용", "상태"] : module === "products" ? ["SKU", "상품명", "유형", "판매가", "상태", "수정일"] : module === "support" ? ["문의번호", "고객", "제목", "유형", "상태", "접수"] : module === "audit-logs" ? ["일시", "작업자", "행동", "대상", "변경", "사유"] : ["주문번호", "고객", "상품", "결제금액", "상태", "접수"];
+  const loading = (module === "orders" && storedOrders === null) || (module === "products" && storedProducts === null) || (module === "support" && storedInquiries === null);
+  const emptyCopy = module === "orders" ? "아직 접수된 주문이 없습니다." : module === "products" ? "아직 등록된 상품이 없습니다. 상품 등록 버튼으로 첫 상품을 추가하세요." : module === "support" ? "아직 접수된 문의가 없습니다." : "표시할 데이터가 없습니다.";
+  return <div className="admin-table-wrap"><table className={compact ? "compact" : ""}><thead><tr><th><input type="checkbox" aria-label="전체 선택"/></th>{headers.map((header)=><th key={header}>{header}<ChevronDown/></th>)}<th/></tr></thead><tbody>{loading ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>PostgreSQL 데이터를 불러오는 중입니다…</td></tr> : loadError ? <tr><td className="admin-table-state error" colSpan={headers.length + 2}>{loadError}</td></tr> : data.length === 0 ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>{emptyCopy}</td></tr> : data.slice(0,compact?4:data.length).map((row,index)=><tr key={row[0]} onClick={() => module === "products" ? undefined : onOpen?.(module === "orders" ? storedOrders?.[index] : module === "support" ? storedInquiries?.[index] : undefined)}><td><input type="checkbox" aria-label={`${row[0]} 선택`} onClick={(event) => event.stopPropagation()}/></td>{row.map((cell,cellIndex)=><td key={cellIndex}>{cellIndex===0?<strong>{cell}</strong>:cellIndex===4?<span className={`table-status s${index % 4}`}>{cell}</span>:cell}</td>)}<td><button aria-label="행 메뉴">•••</button></td></tr>)}</tbody></table></div>;
 }
 
-function DetailDrawer({ module, order, close, onChange }: { module:string; order?:StoredOrder | null; close:()=>void; onChange:()=>void }) {
+function DetailDrawer({ module, order, inquiry, close, onChange }: { module:string; order?:StoredOrder | null; inquiry?:StoredInquiry | null; close:()=>void; onChange:()=>void }) {
   const isStoredOrder = module === "orders" && order;
-  return <div className="drawer-backdrop" onMouseDown={close}><aside className="detail-drawer" role="dialog" aria-modal="true" aria-label={`${moduleMeta[module]?.title ?? "상세"} 상세`} onMouseDown={(e)=>e.stopPropagation()}><header><div><span>{moduleMeta[module]?.eyebrow}</span><h2>{isStoredOrder ? `주문 ${order.orderNumber}` : module === "orders" ? "주문 상세" : "BMW G8X Valved Cat-back"}</h2></div><button onClick={close}><X/></button></header><div className="drawer-tabs"><button className="active">기본 정보</button><button>변경 이력</button><button>감사 로그</button></div><div className="drawer-content"><div className="drawer-status"><span className="status-badge info"><Package/>{isStoredOrder ? orderStatusLabels[order.status] ?? order.status : "상품 준비"}</span><small>{isStoredOrder ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul" }).format(new Date(order.createdAt)) : "상세 항목을 선택해 주세요"}</small></div><h3>핵심 정보</h3>{isStoredOrder ? <dl><div><dt>고객</dt><dd>{order.customerName} · {order.customerEmail}</dd></div><div><dt>상품</dt><dd>{order.item?.productName ?? "상품 정보 없음"}</dd></div><div><dt>SKU</dt><dd>{order.item?.productSku ?? "-"}</dd></div><div><dt>수량 / 금액</dt><dd>{order.item?.quantity ?? 0}개 · {formatPrice(order.totalAmount)}원</dd></div><div><dt>주문 상태</dt><dd>{orderStatusLabels[order.status] ?? order.status}</dd></div><div><dt>결제 상태</dt><dd>{paymentStatusLabels[order.paymentStatus] ?? order.paymentStatus}</dd></div><div><dt>수령 방식</dt><dd>{order.fulfillmentMethod === "INSTALLER_DELIVERY" ? "장착점 배송" : "일반 배송"}</dd></div></dl> : <dl><div><dt>상품</dt><dd>BMW G80/G82 Valved Cat-back Exhaust</dd></div><div><dt>SKU</dt><dd>TB-BMW-G8X-VCE-001</dd></div><div><dt>차량</dt><dd>BMW M3 G80 · 2022 · 3.0</dd></div></dl>}<div className="drawer-evidence"><ShieldCheck/><div><strong>{isStoredOrder ? "PostgreSQL에 저장된 주문입니다" : "변경은 감사 로그에 기록됩니다"}</strong><p>{isStoredOrder ? "주문 생성 이벤트와 최초 상태 이력이 함께 기록됐습니다." : "상태 변경에는 사유 입력이 필요합니다."}</p></div></div></div><footer><button className="admin-button secondary" onClick={close}>닫기</button>{!isStoredOrder && <button className="admin-button primary" onClick={onChange}>상태 변경</button>}</footer></aside></div>;
+  const isStoredInquiry = module === "support" && inquiry;
+  const createdAt = isStoredOrder ? order.createdAt : isStoredInquiry ? inquiry.createdAt : null;
+  return <div className="drawer-backdrop" onMouseDown={close}><aside className="detail-drawer" role="dialog" aria-modal="true" aria-label={`${moduleMeta[module]?.title ?? "상세"} 상세`} onMouseDown={(e)=>e.stopPropagation()}><header><div><span>{moduleMeta[module]?.eyebrow}</span><h2>{isStoredOrder ? `주문 ${order.orderNumber}` : isStoredInquiry ? inquiry.inquiryNumber : module === "orders" ? "주문 상세" : module === "support" ? "문의 상세" : "BMW G8X Valved Cat-back"}</h2></div><button onClick={close} aria-label="상세 닫기"><X/></button></header><div className="drawer-tabs"><button className="active">기본 정보</button>{!isStoredInquiry && <><button>변경 이력</button><button>감사 로그</button></>}</div><div className="drawer-content"><div className="drawer-status"><span className="status-badge info">{isStoredInquiry ? <MessageCircle/> : <Package/>}{isStoredOrder ? orderStatusLabels[order.status] ?? order.status : isStoredInquiry ? inquiryStatusLabels[inquiry.status] ?? inquiry.status : "상품 준비"}</span><small>{createdAt ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul" }).format(new Date(createdAt)) : "상세 항목을 선택해 주세요"}</small></div><h3>핵심 정보</h3>{isStoredOrder ? <dl><div><dt>고객</dt><dd>{order.customerName} · {order.customerEmail}</dd></div><div><dt>상품</dt><dd>{order.item?.productName ?? "상품 정보 없음"}{(order.items?.length ?? 0) > 1 ? ` 외 ${(order.items?.length ?? 1) - 1}건` : ""}</dd></div><div><dt>SKU</dt><dd>{order.item?.productSku ?? "-"}</dd></div><div><dt>수량 / 금액</dt><dd>{order.items?.reduce((sum, item) => sum + item.quantity, 0) ?? order.item?.quantity ?? 0}개 · {formatPrice(order.totalAmount)}원</dd></div><div><dt>주문 상태</dt><dd>{orderStatusLabels[order.status] ?? order.status}</dd></div><div><dt>결제 상태</dt><dd>{paymentStatusLabels[order.paymentStatus] ?? order.paymentStatus}</dd></div><div><dt>수령 방식</dt><dd>{order.fulfillmentMethod === "INSTALLER_DELIVERY" ? "장착점 배송" : "일반 배송"}</dd></div></dl> : isStoredInquiry ? <><dl><div><dt>문의 유형</dt><dd>{inquiryTypeLabels[inquiry.type] ?? inquiry.type}</dd></div><div><dt>고객</dt><dd>{inquiry.customerName}</dd></div><div><dt>이메일</dt><dd>{inquiry.customerEmail}</dd></div><div><dt>연락처</dt><dd>{inquiry.customerPhone}</dd></div><div><dt>제목</dt><dd>{inquiry.subject}</dd></div><div><dt>연결 상품</dt><dd>{inquiry.productName ?? inquiry.productSku ?? "없음"}</dd></div><div><dt>차량 정보</dt><dd>{inquiry.vehicleSnapshot ?? "없음"}</dd></div></dl><h3>문의 내용</h3><p className="inquiry-body">{inquiry.body}</p></> : <dl><div><dt>상품</dt><dd>BMW G80/G82 Valved Cat-back Exhaust</dd></div><div><dt>SKU</dt><dd>TB-BMW-G8X-VCE-001</dd></div><div><dt>차량</dt><dd>BMW M3 G80 · 2022 · 3.0</dd></div></dl>}<div className="drawer-evidence"><ShieldCheck/><div><strong>{isStoredOrder ? "PostgreSQL에 저장된 주문입니다" : isStoredInquiry ? "PostgreSQL에 저장된 고객 문의입니다" : "변경은 감사 로그에 기록됩니다"}</strong><p>{isStoredOrder ? "주문 생성 이벤트와 최초 상태 이력이 함께 기록됐습니다." : isStoredInquiry ? "문의 접수 이벤트와 감사 로그가 함께 기록됐습니다." : "상태 변경에는 사유 입력이 필요합니다."}</p></div></div></div><footer><button className="admin-button secondary" onClick={close}>닫기</button>{!isStoredOrder && !isStoredInquiry && <button className="admin-button primary" onClick={onChange}>상태 변경</button>}</footer></aside></div>;
 }
 
 function ReasonDialog({ module, close, submit }: { module:string; close:()=>void; submit:()=>void }) {

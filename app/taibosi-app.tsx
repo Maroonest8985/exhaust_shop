@@ -221,6 +221,28 @@ const products: Product[] = [
   },
 ];
 
+function storedProductToCatalogProduct(product: StoredProduct): Product {
+  const fitment = (["VERIFIED", "CONDITIONAL", "CONSULTATION_REQUIRED", "INCOMPATIBLE", "NO_DATA"] as const).includes(product.fitmentStatus as Fitment)
+    ? product.fitmentStatus as Fitment
+    : "NO_DATA";
+  const stock = (["DOMESTIC", "OVERSEAS_ORDER", "PREORDER", "OUT_OF_STOCK"] as const).includes(product.stockType as Stock)
+    ? product.stockType as Stock
+    : "OUT_OF_STOCK";
+  return {
+    slug: product.slug,
+    name: product.name,
+    category: product.category,
+    sku: product.sku,
+    material: product.material,
+    price: product.price,
+    fitment,
+    stock,
+    image: product.images[0]?.url ?? garageImage,
+    kicker: product.summary,
+    compatibleVehicles: [],
+  };
+}
+
 const vehicleCatalog: Record<string, Record<string, Record<string, VehicleGeneration>>> = {
   BMW: {
     M3: {
@@ -424,9 +446,13 @@ export function TaibosiApp({ path, vehicleQuery = {} }: { path: string; vehicleQ
     if (path === "/products") return <ProductsPage vehicleQuery={vehicleQuery} />;
     if (path.startsWith("/products/")) {
       const slug = path.split("/").pop() ?? products[0].slug;
+      const staticProduct = products.find((item) => item.slug === slug);
+      if (!staticProduct) {
+        return <DatabaseProductDetailPage slug={slug} addToCart={() => { setCartCount((count) => count + 1); setToast("장바구니에 상품을 담았습니다."); }} showToast={setToast} />;
+      }
       return (
         <ProductDetailPage
-          product={products.find((item) => item.slug === slug) ?? products[0]}
+          product={staticProduct}
           addToCart={() => {
             setCartCount((count) => count + 1);
             setToast("장바구니에 상품을 담았습니다.");
@@ -805,10 +831,23 @@ function ProductsPage({ vehicleQuery }: { vehicleQuery: Partial<VehicleSelection
   const [stockFilter, setStockFilter] = useState<Stock | "ALL">("ALL");
   const [fitFilter, setFitFilter] = useState<Fitment | "ALL">("ALL");
   const [mobileFilter, setMobileFilter] = useState(false);
+  const [databaseProducts, setDatabaseProducts] = useState<StoredProduct[]>([]);
+  useEffect(() => {
+    fetch("/api/products?scope=public", { cache: "no-store" })
+      .then(async (response) => {
+        const data = (await response.json()) as { products?: StoredProduct[] };
+        if (!response.ok) throw new Error("Public products unavailable");
+        setDatabaseProducts(Array.isArray(data.products) ? data.products : []);
+      })
+      .catch(() => setDatabaseProducts([]));
+  }, []);
   const hasVehicle = Boolean(vehicleQuery.maker && vehicleQuery.model && vehicleQuery.generation && vehicleGeneration({ maker: vehicleQuery.maker, model: vehicleQuery.model, generation: vehicleQuery.generation }));
   const selectedVehicleLabel = hasVehicle ? `${vehicleQuery.maker} ${vehicleQuery.model} ${vehicleQuery.generation}` : "차량 미선택";
   const selectedVehicleDetail = [vehicleQuery.year, vehicleQuery.engine, vehicleQuery.specification].filter(Boolean).join(" · ");
-  const vehicleProducts = hasVehicle ? products.filter((product) => product.compatibleVehicles.includes(vehicleKey(vehicleQuery))) : products;
+  const databaseCatalogProducts = databaseProducts.map(storedProductToCatalogProduct);
+  const databaseIdentifiers = new Set(databaseCatalogProducts.flatMap((product) => [product.sku, product.slug]));
+  const catalogProducts = [...databaseCatalogProducts, ...products.filter((product) => !databaseIdentifiers.has(product.sku) && !databaseIdentifiers.has(product.slug))];
+  const vehicleProducts = hasVehicle ? catalogProducts.filter((product) => product.compatibleVehicles.includes(vehicleKey(vehicleQuery))) : catalogProducts;
   const visible = vehicleProducts.filter((product) => (stockFilter === "ALL" || product.stock === stockFilter) && (fitFilter === "ALL" || product.fitment === fitFilter));
   return (
     <div className="products-page page-light">
@@ -840,6 +879,28 @@ function FilterRadio({ label, checked = false, onClick }: { label: string; check
   return <button className={`filter-radio ${checked ? "checked" : ""}`} onClick={onClick}><span>{checked && <Check />}</span>{label}</button>;
 }
 
+function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: string; addToCart: () => void; showToast: (message: string) => void }) {
+  const [storedProduct, setStoredProduct] = useState<StoredProduct | null | undefined>(undefined);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/products?scope=public", { cache: "no-store" })
+      .then(async (response) => {
+        const data = (await response.json()) as { products?: StoredProduct[] };
+        if (!response.ok) throw new Error("Public products unavailable");
+        if (active) setStoredProduct((data.products ?? []).find((product) => product.slug === slug) ?? null);
+      })
+      .catch(() => { if (active) setStoredProduct(null); });
+    return () => { active = false; };
+  }, [slug]);
+  if (storedProduct === undefined) {
+    return <div className="page-light"><div className="grid-container page-top-space"><div className="empty-state"><Package/><h3>상품 정보를 불러오는 중입니다</h3></div></div></div>;
+  }
+  if (!storedProduct) {
+    return <div className="page-light"><div className="grid-container page-top-space"><EmptyState icon={Package} title="상품을 찾을 수 없습니다" copy="비공개되었거나 삭제된 상품입니다." action="제품 목록으로" onAction={() => { window.location.href = "/products"; }}/></div></div>;
+  }
+  return <ProductDetailPage product={storedProductToCatalogProduct(storedProduct)} addToCart={addToCart} showToast={showToast} />;
+}
+
 function ProductDetailPage({ product, addToCart, showToast }: { product: Product; addToCart: () => void; showToast: (message: string) => void }) {
   const [tip, setTip] = useState("Carbon Quad");
   const [quantity, setQuantity] = useState(1);
@@ -861,7 +922,7 @@ function ProductDetailPage({ product, addToCart, showToast }: { product: Product
         <div className="product-detail-grid">
           <section className="product-gallery"><div className="gallery-main"><img src={product.image} alt={`${product.name} 장착 이미지`} /><span className="image-index">01 / 04</span><button className="gallery-arrow left" aria-label="이전 이미지"><ArrowLeft /></button><button className="gallery-arrow right" aria-label="다음 이미지"><ArrowRight /></button></div><div className="gallery-thumbs">{[product.image, garageImage, redBmwImage].map((image, index) => <button className={index === 0 ? "active" : ""} key={image}><img src={image} alt={`${product.name} 썸네일 ${index + 1}`} /></button>)}</div></section>
           <aside className="purchase-panel"><span className="eyebrow red">{product.category}</span><h1>{product.name}</h1><p className="product-sku">SKU {product.sku}</p><div className="panel-badges"><FitmentBadge status={product.fitment} /><StockBadge stock={product.stock} /></div><div className="detail-price"><strong>{formatPrice(product.price)}</strong><span>원</span><small>장착비 별도 · 상담 후 안내</small></div>
-            <div className={`fitment-panel ${fitment.className}`}><div><FitIcon /><strong>{fitment.label}</strong></div><p>{fitment.description}</p><span>BMW M3 G80 · 2022 · 3.0 가솔린</span><button>판단 근거 보기 <ChevronRight /></button></div>
+            <div className={`fitment-panel ${fitment.className}`}><div><FitIcon /><strong>{fitment.label}</strong></div><p>{fitment.description}</p><span>{product.compatibleVehicles[0]?.replaceAll("|", " ") ?? "차량별 적합성 확인 필요"}</span><button>판단 근거 보기 <ChevronRight /></button></div>
             <div className={`stock-panel ${stock.className}`}><StockIcon /><div><strong>{stock.label}</strong><p>{stock.copy}</p></div></div>
             <div className="option-block"><div><strong>팁 옵션</strong><span>필수</span></div><div className="option-chips">{["Carbon Quad", "Black Chrome"].map((item) => <button key={item} className={tip === item ? "selected" : ""} onClick={() => setTip(item)}>{item}{tip === item && <Check />}</button>)}</div></div>
             <div className="quantity-row"><strong>수량</strong><div><button onClick={() => setQuantity(Math.max(1, quantity - 1))}><Minus /></button><span>{quantity}</span><button onClick={() => setQuantity(quantity + 1)}><Plus /></button></div></div>
@@ -1186,19 +1247,26 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
   });
   const [specifications, setSpecifications] = useState([{ label: "재질", value: "SUS304" }, { label: "시스템 구성", value: "" }]);
   const [selectedImages, setSelectedImages] = useState<Array<{ file: File; url: string }>>([]);
+  const [imageProcessing, setImageProcessing] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
-  const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const slugEdited = useRef(false);
+  const update = (key: keyof typeof form, value: string) => {
+    if (key === "slug") slugEdited.current = true;
+    setForm((current) => ({ ...current, [key]: value }));
+  };
   const updateSku = (value: string) => {
     const sku = value.toUpperCase().replace(/[^A-Z0-9._-]/g, "");
-    setForm((current) => ({ ...current, sku, slug: current.slug || sku.toLowerCase().replace(/[._]+/g, "-") }));
+    setForm((current) => ({ ...current, sku, slug: slugEdited.current ? current.slug : sku.toLowerCase().replace(/[._]+/g, "-") }));
   };
   const chooseImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const incoming = Array.from(event.target.files ?? []);
     event.target.value = "";
+    if (incoming.length === 0) return;
     if (selectedImages.length + incoming.length > 4) { setError("상품 이미지는 최대 4장까지 등록할 수 있습니다."); return; }
     setError("");
+    setImageProcessing(true);
     try {
       const compressed = await Promise.all(incoming.map(compressProductImage));
       const next = compressed.map((file) => ({ file, url: URL.createObjectURL(file) }));
@@ -1209,6 +1277,8 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
       setSelectedImages((current) => [...current, ...next]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "이미지를 처리하지 못했습니다.");
+    } finally {
+      setImageProcessing(false);
     }
   };
   const removeImage = (index: number) => setSelectedImages((current) => current.filter((item, itemIndex) => {
@@ -1217,10 +1287,26 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
   }));
   const save = async () => {
     if (processing) return;
+    if (imageProcessing) {
+      setError("이미지를 처리하는 중입니다. 미리보기가 표시된 뒤 다시 저장해 주세요.");
+      return;
+    }
     setError("");
     const completeSpecs = specifications.filter((item) => item.label.trim() && item.value.trim());
-    if (!form.sku || !form.slug || !form.name || !form.price || form.summary.trim().length < 10 || form.description.trim().length < 20 || completeSpecs.length === 0 || selectedImages.length === 0) {
-      setError("필수 정보, 상세 설명, 제품 사양, 이미지를 모두 입력해 주세요.");
+    const missing: string[] = [];
+    if (form.sku.length < 3) missing.push("SKU(3자 이상)");
+    if (!/^[a-z0-9][a-z0-9-]+$/.test(form.slug)) missing.push("URL 슬러그(영문 소문자·숫자·하이픈)");
+    if (form.name.trim().length < 3) missing.push("상품명(3자 이상)");
+    if (!form.category.trim()) missing.push("카테고리");
+    if (!form.material.trim()) missing.push("재질");
+    const price = Number(form.price);
+    if (!form.price || !Number.isSafeInteger(price) || price < 0 || price > 2_000_000_000) missing.push("판매가");
+    if (!form.summary.trim()) missing.push("한 줄 요약");
+    if (!form.description.trim()) missing.push("상세 설명");
+    if (completeSpecs.length === 0) missing.push("제품 사양");
+    if (selectedImages.length === 0) missing.push("상품 이미지");
+    if (missing.length > 0) {
+      setError(`다음 항목을 확인해 주세요: ${missing.join(", ")}`);
       return;
     }
     setProcessing(true);

@@ -22,6 +22,12 @@ test("replaces the starter with the product-specific storefront", async () => {
   assert.match(app, /vehicleGenerations/);
   assert.match(app, /compatibleVehicles/);
   assert.match(app, /vehicleUrl\(finderSelection\)/);
+  assert.match(app, /storedProductToCatalogProduct/);
+  assert.match(app, /DatabaseProductDetailPage/);
+  assert.match(app, /\/api\/products\?scope=public/);
+  assert.match(app, /slugEdited/);
+  assert.match(app, /다음 항목을 확인해 주세요/);
+  assert.doesNotMatch(app, /summary\.trim\(\)\.length < 10|description\.trim\(\)\.length < 20/);
   assert.match(app, /AdminTopbar showToast/);
   assert.match(app, /method: "DELETE"/);
   assert.match(app, /로그아웃/);
@@ -57,6 +63,8 @@ test("defines catch-all customer and admin routes plus persistent actions", asyn
   assert.match(productsApi, /request\.formData/);
   assert.match(productsApi, /productImages/);
   assert.match(productsApi, /PRODUCT_CREATED/);
+  assert.match(productsApi, /publicCatalog/);
+  assert.match(productsApi, /products\.status, "PUBLISHED"/);
   assert.match(adminSessionApi, /adminAuthConfigurationError/);
   assert.match(adminSessionApi, /no-store/);
   assert.match(adminAuth, /LOCAL_ADMIN_EMAIL/);

@@ -48,16 +48,19 @@ function serializeProduct(product: typeof products.$inferSelect, images: Array<t
 }
 
 export async function GET(request: Request) {
-  if (!isAdminRequest(request)) {
+  const publicCatalog = new URL(request.url).searchParams.get("scope") === "public";
+  if (!publicCatalog && !isAdminRequest(request)) {
     return Response.json({ error: "운영자 로그인이 필요합니다." }, { status: 401 });
   }
   try {
     const db = getDb();
-    const rows = await db
+    const query = db
       .select({ product: products, image: productImages })
       .from(products)
-      .leftJoin(productImages, eq(productImages.productId, products.id))
-      .orderBy(desc(products.createdAt), productImages.sortOrder);
+      .leftJoin(productImages, eq(productImages.productId, products.id));
+    const rows = publicCatalog
+      ? await query.where(eq(products.status, "PUBLISHED")).orderBy(desc(products.createdAt), productImages.sortOrder)
+      : await query.orderBy(desc(products.createdAt), productImages.sortOrder);
     const grouped = new Map<string, { product: typeof products.$inferSelect; images: Array<typeof productImages.$inferSelect> }>();
     for (const row of rows) {
       const entry = grouped.get(row.product.id) ?? { product: row.product, images: [] };
@@ -65,7 +68,10 @@ export async function GET(request: Request) {
       grouped.set(row.product.id, entry);
     }
     const items = Array.from(grouped.values()).map(({ product, images }) => serializeProduct(product, images));
-    return Response.json({ products: items, total: items.length });
+    return Response.json(
+      { products: items, total: items.length },
+      { headers: { "cache-control": "no-store, max-age=0" } },
+    );
   } catch {
     return Response.json({ error: "상품 목록을 불러오지 못했습니다." }, { status: 503 });
   }
@@ -121,14 +127,18 @@ export async function POST(request: Request) {
       price > 2_000_000_000 ||
       !allowedStatuses.has(status) ||
       !allowedStockTypes.has(stockType) ||
-      !allowedFitments.has(fitmentStatus) ||
-      summary.length < 10 ||
-      description.length < 20 ||
-      specifications.length === 0 ||
-      files.length === 0 ||
-      files.length > 4
+      !allowedFitments.has(fitmentStatus)
     ) {
-      return Response.json({ error: "필수 상품 정보, 사양, 이미지를 정확히 입력해 주세요." }, { status: 422 });
+      return Response.json({ error: "SKU, URL 슬러그, 상품명, 카테고리, 재질, 판매가를 정확히 입력해 주세요." }, { status: 422 });
+    }
+    if (!summary || !description) {
+      return Response.json({ error: "한 줄 요약과 상세 설명을 입력해 주세요." }, { status: 422 });
+    }
+    if (specifications.length === 0) {
+      return Response.json({ error: "항목과 값이 모두 입력된 제품 사양을 하나 이상 등록해 주세요." }, { status: 422 });
+    }
+    if (files.length === 0 || files.length > 4) {
+      return Response.json({ error: "상품 이미지를 1장 이상 4장 이하로 등록해 주세요." }, { status: 422 });
     }
     const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
     if (totalBytes > maxTotalImageBytes || files.some((file) => file.size > maxImageBytes || !allowedImageTypes.has(file.type))) {

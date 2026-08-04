@@ -15,6 +15,13 @@
       "when": 1785810964741,
       "tag": "0001_warm_rage",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785812726328,
+      "tag": "0002_mature_fixer",
+      "breakpoints": true
     }
   ]
 }

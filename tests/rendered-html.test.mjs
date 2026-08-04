@@ -17,6 +17,11 @@ test("replaces the starter with the product-specific storefront", async () => {
   assert.match(app, /내 차에 맞는/);
   assert.match(app, /차량별 적합성 확인/);
   assert.match(app, /AdminDashboard/);
+  assert.match(app, /vehicleCatalog/);
+  assert.match(app, /vehicleModels/);
+  assert.match(app, /vehicleGenerations/);
+  assert.match(app, /compatibleVehicles/);
+  assert.match(app, /vehicleUrl\(finderSelection\)/);
   assert.match(layout, /Taibosi Exhaust Korea/);
   assert.match(css, /--red:\s*#d93a2f/i);
   assert.doesNotMatch(`${page}${layout}${packageJson}`, /codex-preview|react-loading-skeleton|Starter Project/);
@@ -24,22 +29,29 @@ test("replaces the starter with the product-specific storefront", async () => {
 });
 
 test("defines catch-all customer and admin routes plus persistent actions", async () => {
-  const [catchAll, actions, ordersApi, database, migration, orderMigration, vercel, packageJson] = await Promise.all([
+  const [catchAll, actions, ordersApi, productsApi, database, migration, orderMigration, productMigration, vercel, packageJson] = await Promise.all([
     readFile(new URL("app/[...path]/page.tsx", root), "utf8"),
     readFile(new URL("app/api/actions/route.ts", root), "utf8"),
     readFile(new URL("app/api/orders/route.ts", root), "utf8"),
+    readFile(new URL("app/api/products/route.ts", root), "utf8"),
     readFile(new URL("db/index.ts", root), "utf8"),
     readFile(new URL("drizzle/0000_sour_chronomancer.sql", root), "utf8"),
     readFile(new URL("drizzle/0001_warm_rage.sql", root), "utf8"),
+    readFile(new URL("drizzle/0002_mature_fixer.sql", root), "utf8"),
     readFile(new URL("vercel.json", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
   ]);
   assert.match(catchAll, /path\.join/);
+  assert.match(catchAll, /searchParams/);
+  assert.match(catchAll, /vehicleQuery/);
   assert.match(actions, /commerceEvents/);
   assert.match(actions, /auditLogs/);
   assert.match(ordersApi, /idempotencyKey/);
   assert.match(ordersApi, /orderStatusHistory/);
   assert.match(ordersApi, /db\.transaction/);
+  assert.match(productsApi, /request\.formData/);
+  assert.match(productsApi, /productImages/);
+  assert.match(productsApi, /PRODUCT_CREATED/);
   assert.match(database, /process\.env\.DATABASE_URL/);
   assert.match(database, /drizzle-orm\/postgres-js/);
   assert.match(migration, /CREATE TABLE "commerce_events"/);
@@ -47,6 +59,8 @@ test("defines catch-all customer and admin routes plus persistent actions", asyn
   assert.match(orderMigration, /CREATE TABLE "orders"/);
   assert.match(orderMigration, /CREATE TABLE "order_items"/);
   assert.match(orderMigration, /CREATE TABLE "order_status_history"/);
+  assert.match(productMigration, /CREATE TABLE "products"/);
+  assert.match(productMigration, /CREATE TABLE "product_images"/);
   assert.match(vercel, /"framework":\s*"nextjs"/);
   assert.match(packageJson, /"build":\s*"next build"/);
   assert.doesNotMatch(packageJson, /vinext|wrangler|@cloudflare\/vite-plugin/);

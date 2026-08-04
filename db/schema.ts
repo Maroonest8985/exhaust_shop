@@ -36,6 +36,48 @@ export const auditLogs = pgTable(
   ],
 );
 
+export const products = pgTable(
+  "products",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    sku: varchar("sku", { length: 80 }).notNull(),
+    slug: varchar("slug", { length: 160 }).notNull(),
+    name: text("name").notNull(),
+    category: varchar("category", { length: 80 }).notNull(),
+    material: varchar("material", { length: 200 }).notNull(),
+    price: integer("price").notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("DRAFT"),
+    stockType: varchar("stock_type", { length: 32 }).notNull(),
+    fitmentStatus: varchar("fitment_status", { length: 32 }).notNull(),
+    summary: text("summary").notNull(),
+    description: text("description").notNull(),
+    specifications: jsonb("specifications").$type<Array<{ label: string; value: string }>>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_products_sku").on(table.sku),
+    uniqueIndex("uq_products_slug").on(table.slug),
+    index("idx_products_status_created").on(table.status, table.createdAt),
+  ],
+);
+
+export const productImages = pgTable(
+  "product_images",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+    fileName: varchar("file_name", { length: 255 }).notNull(),
+    mimeType: varchar("mime_type", { length: 80 }).notNull(),
+    byteSize: integer("byte_size").notNull(),
+    imageBase64: text("image_base64").notNull(),
+    altText: varchar("alt_text", { length: 300 }).notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_product_images_product_sort").on(table.productId, table.sortOrder)],
+);
+
 export const orders = pgTable(
   "orders",
   {

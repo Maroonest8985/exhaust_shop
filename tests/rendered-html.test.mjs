@@ -24,16 +24,23 @@ test("replaces the starter with the product-specific storefront", async () => {
 });
 
 test("defines catch-all customer and admin routes plus persistent actions", async () => {
-  const [catchAll, actions, hosting, migration] = await Promise.all([
+  const [catchAll, actions, database, migration, vercel, packageJson] = await Promise.all([
     readFile(new URL("app/[...path]/page.tsx", root), "utf8"),
     readFile(new URL("app/api/actions/route.ts", root), "utf8"),
-    readFile(new URL(".openai/hosting.json", root), "utf8"),
-    readFile(new URL("drizzle/0000_magenta_roulette.sql", root), "utf8"),
+    readFile(new URL("db/index.ts", root), "utf8"),
+    readFile(new URL("drizzle/0000_sour_chronomancer.sql", root), "utf8"),
+    readFile(new URL("vercel.json", root), "utf8"),
+    readFile(new URL("package.json", root), "utf8"),
   ]);
   assert.match(catchAll, /path\.join/);
   assert.match(actions, /commerceEvents/);
   assert.match(actions, /auditLogs/);
-  assert.match(hosting, /"d1":\s*"DB"/);
-  assert.match(migration, /CREATE TABLE `commerce_events`/);
-  assert.match(migration, /CREATE TABLE `audit_logs`/);
+  assert.match(database, /process\.env\.DATABASE_URL/);
+  assert.match(database, /@neondatabase\/serverless/);
+  assert.match(migration, /CREATE TABLE "commerce_events"/);
+  assert.match(migration, /CREATE TABLE "audit_logs"/);
+  assert.match(vercel, /"framework":\s*"nextjs"/);
+  assert.match(packageJson, /"build":\s*"next build"/);
+  assert.doesNotMatch(packageJson, /vinext|wrangler|@cloudflare\/vite-plugin/);
+  await assert.rejects(access(new URL(".openai/hosting.json", root)));
 });

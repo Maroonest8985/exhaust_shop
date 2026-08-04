@@ -4,7 +4,7 @@
 
 ## 실행
 
-Node.js 22.13 이상이 필요합니다.
+Node.js 22가 필요합니다.
 
 ```bash
 npm install
@@ -19,7 +19,7 @@ npm test
 npm run lint
 ```
 
-데이터 스키마 변경 후에는 다음 명령으로 D1 마이그레이션을 생성합니다.
+데이터 스키마 변경 후에는 다음 명령으로 PostgreSQL 마이그레이션을 생성합니다.
 
 ```bash
 npm run db:generate
@@ -34,14 +34,33 @@ npm run db:generate
 
 ## 데이터와 Mock 연동
 
-- D1 바인딩 `DB`가 주문, 문의, 재입고 알림, 장착 신청, 재고·적합성 변경 이벤트를 보존합니다.
+- Neon PostgreSQL이 주문, 문의, 재입고 알림, 장착 신청, 재고·적합성 변경 이벤트를 보존합니다.
 - `app/api/actions`가 데모 작업을 저장하며, 재고·적합성·주문 변경은 감사로그를 함께 생성합니다.
 - PG, 배송, 문자, 이메일, 지도는 외부 키 없이 동작하도록 화면과 Mock 상태로 구성했습니다.
 - 확정 데이터가 없는 배송일, 입고일, 장착비, 인증, 성능 수치는 생성하지 않습니다.
 
+로컬에서는 `.env.local`에 PostgreSQL 연결 문자열을 설정합니다.
+
+```bash
+DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+```
+
+## Vercel 배포
+
+Vercel 프로젝트 설정은 다음 값이면 됩니다.
+
+- Framework Preset: `Next.js`
+- Root Directory: `./`
+- Build Command: Override 끄기 (`next build` 자동 사용)
+- Output Directory: Override 끄기 (`.next` 자동 사용)
+- Install Command: Override 끄기 (`npm install` 자동 사용)
+- Node.js Version: `22.x`
+
+Vercel Marketplace에서 Neon을 연결하거나 Project Settings의 Environment Variables에 `DATABASE_URL`을 등록한 뒤 재배포합니다. 별도 Cloudflare 또는 Sites 설정은 필요하지 않습니다.
+
 ## 인증과 샘플 계정
 
-배포 사이트는 Sites의 비공개 접근 정책을 사용합니다. `/login`, `/signup`, `/admin/login`, `/admin/verify`는 제품 흐름 검증을 위한 UI 데모입니다.
+`/login`, `/signup`, `/admin/login`, `/admin/verify`는 제품 흐름 검증을 위한 UI 데모입니다. 실제 배포의 접근 제어와 인증은 별도로 연결해야 합니다.
 
 - 고객 데모: `taibosi.demo@example.com`
 - 운영자 데모: `admin@taibosi.demo`

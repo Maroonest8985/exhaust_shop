@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     const db = await getDb();
     const [event] = await db
       .insert(commerceEvents)
-      .values({ kind, payload: JSON.stringify(body.payload), ...actor })
+      .values({ kind, payload: body.payload, ...actor })
       .returning();
 
     if (["inventory", "fitment", "order"].includes(kind)) {
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
         targetType: kind.toUpperCase(),
         targetId: String(body.payload.product ?? body.payload.module ?? event.id),
         reason: typeof body.payload.reason === "string" ? body.payload.reason : "고객 또는 운영자 작업",
-        diff: JSON.stringify(body.payload),
+        diff: body.payload,
         ...actor,
       });
     }

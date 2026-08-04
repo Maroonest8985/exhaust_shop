@@ -1,6 +1,7 @@
 import { desc } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { auditLogs, commerceEvents } from "../../../db/schema";
+import { isAdminRequest } from "../../../lib/admin-auth";
 
 const allowedKinds = new Set(["inquiry", "restock", "booking", "order", "inventory", "fitment", "support"]);
 
@@ -11,7 +12,10 @@ function getActor(request: Request) {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAdminRequest(request)) {
+    return Response.json({ error: "운영자 로그인이 필요합니다." }, { status: 401 });
+  }
   try {
     const db = await getDb();
     const events = await db.select().from(commerceEvents).orderBy(desc(commerceEvents.createdAt), desc(commerceEvents.id)).limit(20);
@@ -28,6 +32,9 @@ export async function POST(request: Request) {
     const kind = body.kind?.trim() ?? "";
     if (!allowedKinds.has(kind) || !body.payload || Array.isArray(body.payload)) {
       return Response.json({ error: "유효한 작업 유형과 데이터가 필요합니다." }, { status: 400 });
+    }
+    if (["inventory", "fitment"].includes(kind) && !isAdminRequest(request)) {
+      return Response.json({ error: "운영자 로그인이 필요합니다." }, { status: 401 });
     }
 
     const actor = getActor(request);

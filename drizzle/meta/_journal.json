@@ -8,6 +8,13 @@
       "when": 1785810452639,
       "tag": "0000_sour_chronomancer",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785810964741,
+      "tag": "0001_warm_rage",
+      "breakpoints": true
     }
   ]
 }

@@ -32,9 +32,11 @@ npm run db:generate
 
 첨부 요구사항의 나머지 고객·어드민 경로도 공통 라우터에서 업무 맥락에 맞는 화면으로 연결됩니다.
 
-## 데이터와 Mock 연동
+## 데이터 연동
 
-- Neon PostgreSQL이 주문, 문의, 재입고 알림, 장착 신청, 재고·적합성 변경 이벤트를 보존합니다.
+- PostgreSQL이 주문, 주문 상품 스냅샷, 상태 이력, 문의, 재입고 알림, 장착 신청, 재고·적합성 변경 이벤트를 보존합니다.
+- 주문 생성은 `/api/orders`에서 서버 기준 상품 가격을 적용하고 고유 요청 키로 중복 접수를 차단한 뒤 하나의 트랜잭션으로 저장합니다.
+- 어드민 `/admin/orders`와 대시보드의 최근 주문은 PostgreSQL 데이터를 실시간으로 조회합니다.
 - `app/api/actions`가 데모 작업을 저장하며, 재고·적합성·주문 변경은 감사로그를 함께 생성합니다.
 - PG, 배송, 문자, 이메일, 지도는 외부 키 없이 동작하도록 화면과 Mock 상태로 구성했습니다.
 - 확정 데이터가 없는 배송일, 입고일, 장착비, 인증, 성능 수치는 생성하지 않습니다.
@@ -43,6 +45,9 @@ npm run db:generate
 
 ```bash
 DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=충분히-긴-운영자-비밀번호
+ADMIN_SESSION_SECRET=32바이트-이상의-무작위-문자열
 ```
 
 ## Vercel 배포
@@ -56,11 +61,19 @@ Vercel 프로젝트 설정은 다음 값이면 됩니다.
 - Install Command: Override 끄기 (`npm install` 자동 사용)
 - Node.js Version: `22.x`
 
-Vercel Marketplace에서 Neon을 연결하거나 Project Settings의 Environment Variables에 `DATABASE_URL`을 등록한 뒤 재배포합니다. 별도 Cloudflare 또는 Sites 설정은 필요하지 않습니다.
+Vercel Marketplace의 PostgreSQL 공급자를 연결하거나 Project Settings의 Environment Variables에 `DATABASE_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`을 등록한 뒤 재배포합니다. Prisma Postgres는 런타임 쿼리에 pooled 연결 문자열을 권장하며, 직접 연결 문자열은 마이그레이션에 사용합니다. 별도 Cloudflare 또는 Sites 설정은 필요하지 않습니다.
+
+현재 마이그레이션을 대상 DB에 적용하려면 다음 명령을 실행합니다.
+
+```bash
+npm run db:migrate
+```
+
+PG가 아직 연결되지 않았으므로 주문은 `RECEIVED`, 결제는 `PENDING`으로 저장됩니다. 실제 카드 승인 완료 처리는 결제 공급자 연동 후 웹훅에서 갱신해야 합니다.
 
 ## 인증과 샘플 계정
 
-`/login`, `/signup`, `/admin/login`, `/admin/verify`는 제품 흐름 검증을 위한 UI 데모입니다. 실제 배포의 접근 제어와 인증은 별도로 연결해야 합니다.
+고객 `/login`, `/signup`은 제품 흐름 검증을 위한 UI 데모입니다. 운영자 `/admin/login`은 환경 변수의 계정을 확인하고 12시간 유효한 HttpOnly 세션 쿠키를 발급하며, 주문 조회 API는 이 세션이 있어야 사용할 수 있습니다.
 
 - 고객 데모: `taibosi.demo@example.com`
 - 운영자 데모: `admin@taibosi.demo`

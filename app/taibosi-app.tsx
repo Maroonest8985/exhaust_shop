@@ -51,7 +51,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Fitment = "VERIFIED" | "CONDITIONAL" | "CONSULTATION_REQUIRED" | "INCOMPATIBLE" | "NO_DATA";
 type Stock = "DOMESTIC" | "OVERSEAS_ORDER" | "PREORDER" | "OUT_OF_STOCK";
@@ -67,6 +67,58 @@ type Product = {
   stock: Stock;
   image: string;
   kicker: string;
+};
+
+type StoredOrder = {
+  id: string;
+  orderNumber: string;
+  status: string;
+  paymentStatus: string;
+  paymentMethod: string;
+  fulfillmentMethod: string;
+  customerName: string;
+  customerEmail: string;
+  totalAmount: number;
+  currency: string;
+  createdAt: string;
+  item: {
+    productSku: string;
+    productName: string;
+    optionName: string | null;
+    quantity: number;
+    unitPrice: number;
+    lineTotal: number;
+  } | null;
+};
+
+type OrderDetail = {
+  orderNumber: string;
+  status: string;
+  paymentStatus: string;
+  paymentMethod: string;
+  fulfillmentMethod: string;
+  totalAmount: number;
+  createdAt: string;
+  items: NonNullable<StoredOrder["item"]>[];
+  history: { toStatus: string; reason: string | null; createdAt: string }[];
+};
+
+const orderStatusLabels: Record<string, string> = {
+  RECEIVED: "주문 접수",
+  PAID: "결제 완료",
+  PREPARING: "상품 준비",
+  SHIPPED: "배송 중",
+  COMPLETED: "완료",
+  CANCELLATION_REQUESTED: "취소 요청",
+  CANCELLED: "취소",
+  REFUNDED: "환불",
+};
+
+const paymentStatusLabels: Record<string, string> = {
+  PENDING: "결제 확인 대기",
+  PAID: "결제 완료",
+  FAILED: "결제 실패",
+  REFUNDED: "환불 완료",
 };
 
 const heroImage =
@@ -669,19 +721,61 @@ function OrderSummary({ total, actionHref, action }: { total: number; actionHref
 function CheckoutPage({ showToast }: { showToast: (message: string) => void }) {
   const [agree, setAgree] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [form, setForm] = useState({
+    customerName: "",
+    customerPhone: "",
+    customerEmail: "",
+    recipientName: "",
+    recipientPhone: "",
+    postalCode: "",
+    addressLine1: "",
+    addressLine2: "",
+    fulfillmentMethod: "INSTALLER_DELIVERY",
+    paymentMethod: "BANK_TRANSFER",
+  });
+  const idempotencyKey = useRef<string | null>(null);
+  const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
   const submit = async () => {
+    if (processing) return;
     if (!agree) { showToast("필수 동의 항목을 확인해 주세요."); return; }
+    if (!form.customerName || !form.customerPhone || !form.customerEmail || !form.recipientName || !form.recipientPhone || !form.postalCode || !form.addressLine1) {
+      showToast("주문자와 배송지의 필수 정보를 입력해 주세요.");
+      return;
+    }
     setProcessing(true);
-    await saveAction("order", { product: products[0].sku, total: products[0].price, status: "RECEIVED" });
-    window.setTimeout(() => { window.location.href = "/checkout/complete"; }, 700);
+    idempotencyKey.current ??= window.crypto.randomUUID();
+    try {
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...form,
+          idempotencyKey: idempotencyKey.current,
+          productSku: products[0].sku,
+          quantity: 1,
+          optionName: "Carbon Quad · Valve Controller",
+          vehicleSnapshot: "BMW M3 G80 · 2022",
+        }),
+      });
+      const data = (await response.json()) as { order?: StoredOrder; error?: string };
+      if (!response.ok || !data.order) {
+        showToast(data.error ?? "주문을 접수하지 못했습니다.");
+        setProcessing(false);
+        return;
+      }
+      window.location.href = `/checkout/complete?order=${encodeURIComponent(data.order.orderNumber)}`;
+    } catch {
+      showToast("네트워크 연결을 확인한 뒤 다시 시도해 주세요.");
+      setProcessing(false);
+    }
   };
   return (
-    <div className="checkout-page page-light"><div className="checkout-header"><div className="grid-container"><BrandMark dark /><ol><li className="done"><Check />장바구니</li><li className="active"><span>2</span>주문·결제</li><li><span>3</span>완료</li></ol><a href="/cart"><X /></a></div></div><div className="grid-container narrow-page checkout-body"><h1>주문·결제</h1><div className="checkout-layout"><div className="checkout-sections"><CheckoutSection number="01" title="주문자 정보"><div className="form-grid"><Field label="이름" placeholder="홍길동" /><Field label="연락처" placeholder="010-0000-0000" /><Field label="이메일" placeholder="name@example.com" wide /></div></CheckoutSection><CheckoutSection number="02" title="배송지"><div className="form-grid"><Field label="받는 분" placeholder="홍길동" /><Field label="연락처" placeholder="010-0000-0000" /><Field label="주소" placeholder="우편번호 검색" wide /><Field label="상세 주소" placeholder="상세 주소 입력" wide /></div></CheckoutSection><CheckoutSection number="03" title="장착 방식"><div className="choice-grid"><label className="choice-card selected"><input type="radio" name="install" defaultChecked /><Store /><strong>장착점으로 배송</strong><span>구매 후 장착 예약 신청</span><CheckCircle2 /></label><label className="choice-card"><input type="radio" name="install" /><Truck /><strong>일반 배송</strong><span>입력한 주소로 배송</span></label></div></CheckoutSection><CheckoutSection number="04" title="결제 수단"><div className="payment-options"><button className="selected">신용·체크카드 <Check /></button><button>간편결제</button><button>무통장입금</button></div></CheckoutSection><CheckoutSection number="05" title="약관 동의"><label className="consent-all"><input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} /><span><Check /></span><strong>필수 약관에 모두 동의합니다</strong></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 구매조건 및 결제 진행 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 개인정보 수집·이용 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" /><span>[선택] 장착 정보 및 혜택 알림 동의</span><a href="#">보기</a></label></CheckoutSection></div><aside className="order-summary checkout-summary"><h2>주문 상품</h2><div className="summary-product"><img src={products[0].image} alt={products[0].name} /><div><strong>{products[0].name}</strong><span>Carbon Quad · 1개</span></div></div><dl><div><dt>상품 금액</dt><dd>3,200,000원</dd></div><div><dt>배송비</dt><dd>무료</dd></div><div><dt>장착비</dt><dd>상담 후 안내</dd></div></dl><div className="summary-total"><span>최종 결제 금액</span><strong>3,200,000<small>원</small></strong></div><button className="button primary full large" disabled={processing} onClick={submit}>{processing ? "승인 상태 확인 중…" : "3,200,000원 결제하기"}</button><p><LockKeyhole /> 처리 중에는 중복 결제가 차단됩니다.</p></aside></div></div><div className="checkout-mobile-action"><div><span>결제 예정</span><strong>3,200,000원</strong></div><button className="button primary" onClick={submit} disabled={processing}>{processing ? "확인 중…" : "결제하기"}</button></div></div>
+    <div className="checkout-page page-light"><div className="checkout-header"><div className="grid-container"><BrandMark dark /><ol><li className="done"><Check />장바구니</li><li className="active"><span>2</span>주문 접수</li><li><span>3</span>완료</li></ol><a href="/cart"><X /></a></div></div><div className="grid-container narrow-page checkout-body"><h1>주문 정보</h1><div className="checkout-layout"><div className="checkout-sections"><CheckoutSection number="01" title="주문자 정보"><div className="form-grid"><Field label="이름" placeholder="홍길동" value={form.customerName} onValueChange={(value) => update("customerName", value)} /><Field label="연락처" placeholder="010-0000-0000" type="tel" value={form.customerPhone} onValueChange={(value) => update("customerPhone", value)} /><Field label="이메일" placeholder="name@example.com" type="email" value={form.customerEmail} onValueChange={(value) => update("customerEmail", value)} wide /></div></CheckoutSection><CheckoutSection number="02" title="배송지"><div className="form-grid"><Field label="받는 분" placeholder="홍길동" value={form.recipientName} onValueChange={(value) => update("recipientName", value)} /><Field label="연락처" placeholder="010-0000-0000" type="tel" value={form.recipientPhone} onValueChange={(value) => update("recipientPhone", value)} /><Field label="우편번호" placeholder="우편번호 입력" value={form.postalCode} onValueChange={(value) => update("postalCode", value)} /><Field label="주소" placeholder="기본 주소 입력" value={form.addressLine1} onValueChange={(value) => update("addressLine1", value)} /><Field label="상세 주소" placeholder="상세 주소 입력" value={form.addressLine2} onValueChange={(value) => update("addressLine2", value)} wide /></div></CheckoutSection><CheckoutSection number="03" title="수령 방식"><div className="choice-grid"><label className={`choice-card ${form.fulfillmentMethod === "INSTALLER_DELIVERY" ? "selected" : ""}`}><input type="radio" name="install" checked={form.fulfillmentMethod === "INSTALLER_DELIVERY"} onChange={() => update("fulfillmentMethod", "INSTALLER_DELIVERY")} /><Store /><strong>장착점으로 배송</strong><span>구매 후 장착 예약 신청</span>{form.fulfillmentMethod === "INSTALLER_DELIVERY" && <CheckCircle2 />}</label><label className={`choice-card ${form.fulfillmentMethod === "STANDARD_DELIVERY" ? "selected" : ""}`}><input type="radio" name="install" checked={form.fulfillmentMethod === "STANDARD_DELIVERY"} onChange={() => update("fulfillmentMethod", "STANDARD_DELIVERY")} /><Truck /><strong>일반 배송</strong><span>입력한 주소로 배송</span>{form.fulfillmentMethod === "STANDARD_DELIVERY" && <CheckCircle2 />}</label></div></CheckoutSection><CheckoutSection number="04" title="결제 방법"><div className="payment-options"><button className={form.paymentMethod === "CARD" ? "selected" : ""} onClick={() => update("paymentMethod", "CARD")}>신용·체크카드 {form.paymentMethod === "CARD" && <Check />}</button><button className={form.paymentMethod === "EASY_PAY" ? "selected" : ""} onClick={() => update("paymentMethod", "EASY_PAY")}>간편결제 {form.paymentMethod === "EASY_PAY" && <Check />}</button><button className={form.paymentMethod === "BANK_TRANSFER" ? "selected" : ""} onClick={() => update("paymentMethod", "BANK_TRANSFER")}>무통장입금 {form.paymentMethod === "BANK_TRANSFER" && <Check />}</button></div><p className="payment-disclaimer"><Info /> 현재 PG가 연결되지 않아 주문 접수 후 결제 확인 대기 상태로 저장됩니다.</p></CheckoutSection><CheckoutSection number="05" title="약관 동의"><label className="consent-all"><input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} /><span><Check /></span><strong>필수 약관에 모두 동의합니다</strong></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 구매조건 및 주문 진행 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" checked={agree} readOnly /><span>[필수] 개인정보 수집·이용 동의</span><a href="#">보기</a></label><label className="consent-row"><input type="checkbox" /><span>[선택] 장착 정보 및 혜택 알림 동의</span><a href="#">보기</a></label></CheckoutSection></div><aside className="order-summary checkout-summary"><h2>주문 상품</h2><div className="summary-product"><img src={products[0].image} alt={products[0].name} /><div><strong>{products[0].name}</strong><span>Carbon Quad · 1개</span></div></div><dl><div><dt>상품 금액</dt><dd>3,200,000원</dd></div><div><dt>배송비</dt><dd>무료</dd></div><div><dt>장착비</dt><dd>상담 후 안내</dd></div></dl><div className="summary-total"><span>주문 금액</span><strong>3,200,000<small>원</small></strong></div><button className="button primary full large" disabled={processing} onClick={submit}>{processing ? "DB에 주문 저장 중…" : "3,200,000원 주문 접수"}</button><p><LockKeyhole /> 중복 요청은 주문 키로 차단됩니다.</p></aside></div></div><div className="checkout-mobile-action"><div><span>주문 금액</span><strong>3,200,000원</strong></div><button className="button primary" onClick={submit} disabled={processing}>{processing ? "저장 중…" : "주문 접수"}</button></div></div>
   );
 }
 
-function Field({ label, placeholder, wide = false }: { label: string; placeholder: string; wide?: boolean }) {
-  return <label className={wide ? "wide" : ""}><span>{label}</span><input placeholder={placeholder} /></label>;
+function Field({ label, placeholder, wide = false, type = "text", value, onValueChange }: { label: string; placeholder: string; wide?: boolean; type?: string; value?: string; onValueChange?: (value: string) => void }) {
+  return <label className={wide ? "wide" : ""}><span>{label}</span><input type={type} placeholder={placeholder} {...(value !== undefined ? { value, onChange: (event: React.ChangeEvent<HTMLInputElement>) => onValueChange?.(event.target.value) } : {})} /></label>;
 }
 
 function CheckoutSection({ number, title, children }: { number: string; title: string; children: React.ReactNode }) {
@@ -689,8 +783,22 @@ function CheckoutSection({ number, title, children }: { number: string; title: s
 }
 
 function CompletePage() {
+  const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const orderNumber = new URLSearchParams(window.location.search).get("order");
+    if (!orderNumber) { queueMicrotask(() => setError("주문번호가 없습니다.")); return; }
+    fetch(`/api/orders/${encodeURIComponent(orderNumber)}`)
+      .then(async (response) => {
+        const data = (await response.json()) as { order?: OrderDetail; error?: string };
+        if (!response.ok || !data.order) throw new Error(data.error ?? "주문을 불러오지 못했습니다.");
+        setOrder(data.order);
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "주문을 불러오지 못했습니다."));
+  }, []);
+  const orderedAt = order ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul" }).format(new Date(order.createdAt)) : "확인 중";
   return (
-    <div className="complete-page page-light"><div className="grid-container complete-container"><div className="complete-icon"><Check /></div><span className="eyebrow red">ORDER COMPLETE</span><h1>주문이 접수되었습니다</h1><p>주문번호 <strong>TB-260804-0142</strong> · 결제 및 재고 상태를 확인했습니다.</p><div className="next-step-card"><div className="next-step-head"><PackageCheck /><div><strong>국내 재고 상품</strong><span>주문 확인 후 출고 일정을 안내합니다</span></div></div><ol><li className="done"><span><Check /></span><div><strong>주문 접수</strong><small>2026.08.04 11:42</small></div></li><li className="active"><span>2</span><div><strong>상품 준비</strong><small>담당자가 재고를 최종 확인합니다</small></div></li><li><span>3</span><div><strong>배송 또는 장착점 입고</strong><small>확정 후 알림으로 안내합니다</small></div></li></ol></div><div className="complete-actions"><a className="button primary" href="/installation/booking">장착 예약 신청 <ArrowRight /></a><a className="button secondary" href="/mypage/orders/TB-260804-0142">주문 상세 보기</a></div><p className="muted-note">장착 일정은 장착점 확인 후 확정됩니다. 화면의 날짜는 임의로 생성하지 않습니다.</p></div></div>
+    <div className="complete-page page-light"><div className="grid-container complete-container"><div className="complete-icon"><Check /></div><span className="eyebrow red">ORDER RECEIVED</span><h1>{error ? "주문 확인이 필요합니다" : "주문이 접수되었습니다"}</h1><p>{error ? error : <>주문번호 <strong>{order?.orderNumber ?? "확인 중…"}</strong> · {paymentStatusLabels[order?.paymentStatus ?? "PENDING"]}</>}</p><div className="next-step-card"><div className="next-step-head"><PackageCheck /><div><strong>{order?.items[0]?.productName ?? "주문 상품 확인 중"}</strong><span>주문 확인 후 결제 및 출고 절차를 안내합니다</span></div></div><ol><li className="done"><span><Check /></span><div><strong>주문 접수</strong><small>{orderedAt}</small></div></li><li className="active"><span>2</span><div><strong>결제 확인</strong><small>결제 연동 또는 운영자 확인이 필요합니다</small></div></li><li><span>3</span><div><strong>상품 준비 및 배송</strong><small>확정 후 알림으로 안내합니다</small></div></li></ol></div><div className="complete-actions"><a className="button primary" href="/installation/booking">장착 예약 신청 <ArrowRight /></a><a className="button secondary" href={order ? `/mypage/orders/${order.orderNumber}` : "/mypage/orders"}>주문 내역 보기</a></div><p className="muted-note">장착 일정과 결제 완료 여부는 확인된 데이터만 표시합니다.</p></div></div>
   );
 }
 
@@ -758,12 +866,53 @@ const adminNav: Array<{ group: string; items: Array<[string, string, LucideIcon]
 ];
 
 function AdminApp({ path, showToast, toast }: { path: string; showToast: (message: string) => void; toast: string }) {
-  if (path === "/admin/login" || path === "/admin/verify") return <AdminLogin verify={path.endsWith("verify")} />;
+  const isLoginPage = path === "/admin/login" || path === "/admin/verify";
+  const [authorized, setAuthorized] = useState(isLoginPage);
+  useEffect(() => {
+    if (isLoginPage) return;
+    fetch("/api/admin/session")
+      .then((response) => {
+        if (!response.ok) {
+          window.location.replace("/admin/login");
+          return;
+        }
+        setAuthorized(true);
+      })
+      .catch(() => window.location.replace("/admin/login"));
+  }, [isLoginPage]);
+  if (isLoginPage) return <AdminLogin />;
+  if (!authorized) return <div className="admin-auth-loading"><LockKeyhole/><span>운영자 세션을 확인하는 중입니다…</span></div>;
   return <div className="admin-shell"><AdminSidebar path={path}/><div className="admin-workspace"><AdminTopbar/><main className="admin-main">{path === "/admin" ? <AdminDashboard/> : <AdminModule path={path} showToast={showToast}/>}</main></div>{toast && <div className="toast" role="status"><CheckCircle2 size={18}/>{toast}</div>}</div>;
 }
 
-function AdminLogin({ verify }: { verify: boolean }) {
-  return <div className="admin-login"><div className="admin-login-brand"><BrandMark/><span>OPERATIONS</span></div><div className="admin-login-card"><div className="admin-lock"><LockKeyhole/></div><span className="eyebrow red">SECURE ADMIN</span><h1>{verify ? "2단계 인증" : "운영자 로그인"}</h1><p>{verify ? "인증 앱에 표시된 6자리 코드를 입력해 주세요." : "권한이 부여된 운영자 계정으로 로그인하세요."}</p>{verify ? <><div className="code-inputs">{Array.from({length: 6}).map((_, index) => <input key={index} inputMode="numeric" maxLength={1} aria-label={`인증 코드 ${index + 1}번째 자리`}/>)}</div><a className="button primary full large" href="/admin">인증하기</a></> : <><Field label="이메일" placeholder="admin@taibosi.demo"/><Field label="비밀번호" placeholder="비밀번호 입력"/><a className="button primary full large" href="/admin/verify">로그인</a></>}<div className="admin-security-note"><ShieldCheck/><span>로그인과 2FA 시도는 감사 로그에 기록됩니다.</span></div><a href="/">고객 쇼핑몰로 돌아가기</a></div></div>;
+function AdminLogin() {
+  const [email, setEmail] = useState("admin@taibosi.demo");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [processing, setProcessing] = useState(false);
+  const submit = async () => {
+    if (processing) return;
+    setProcessing(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        setError(data.error ?? "로그인하지 못했습니다.");
+        setProcessing(false);
+        return;
+      }
+      window.location.href = "/admin";
+    } catch {
+      setError("네트워크 연결을 확인해 주세요.");
+      setProcessing(false);
+    }
+  };
+  return <div className="admin-login"><div className="admin-login-brand"><BrandMark/><span>OPERATIONS</span></div><div className="admin-login-card"><div className="admin-lock"><LockKeyhole/></div><span className="eyebrow red">SECURE ADMIN</span><h1>운영자 로그인</h1><p>환경 변수에 등록된 운영자 계정으로 로그인하세요.</p><Field label="이메일" placeholder="admin@taibosi.demo" type="email" value={email} onValueChange={setEmail}/><Field label="비밀번호" placeholder="비밀번호 입력" type="password" value={password} onValueChange={setPassword}/>{error && <p className="admin-login-error" role="alert">{error}</p>}<button className="button primary full large" onClick={submit} disabled={processing}>{processing ? "확인 중…" : "로그인"}</button><div className="admin-security-note"><ShieldCheck/><span>성공한 로그인은 HttpOnly 세션 쿠키로 보호됩니다.</span></div><a href="/">고객 쇼핑몰로 돌아가기</a></div></div>;
 }
 
 function AdminSidebar({ path }: { path: string }) {
@@ -771,18 +920,38 @@ function AdminSidebar({ path }: { path: string }) {
 }
 
 function AdminTopbar() {
-  return <header className="admin-topbar"><div><Search/><input placeholder="주문번호, 상품, 고객 검색" aria-label="관리자 통합 검색"/><kbd>⌘ K</kbd></div><span className="admin-sample">샘플 데이터</span><button aria-label="알림"><Bell/><b>3</b></button><button aria-label="설정"><Settings/></button></header>;
+  return <header className="admin-topbar"><div><Search/><input placeholder="주문번호, 상품, 고객 검색" aria-label="관리자 통합 검색"/><kbd>⌘ K</kbd></div><span className="admin-sample">PostgreSQL 연결</span><button aria-label="알림"><Bell/><b>3</b></button><button aria-label="설정"><Settings/></button></header>;
 }
 
 function AdminDashboard() {
   const [eventCount, setEventCount] = useState<number | null>(null);
+  const [orderData, setOrderData] = useState<{ orders: StoredOrder[]; total: number } | null>(null);
   useEffect(() => {
     fetch("/api/actions")
       .then((response) => response.json() as Promise<{ events?: unknown[] }>)
       .then((data) => setEventCount(Array.isArray(data.events) ? data.events.length : 0))
       .catch(() => setEventCount(0));
+    fetch("/api/orders?limit=100")
+      .then((response) => response.json() as Promise<{ orders?: StoredOrder[]; total?: number }>)
+      .then((data) => setOrderData({ orders: Array.isArray(data.orders) ? data.orders : [], total: data.total ?? 0 }))
+      .catch(() => setOrderData({ orders: [], total: 0 }));
   }, []);
-  return <><AdminPageHeader eyebrow="OVERVIEW" title="운영 대시보드" copy="2026년 8월 4일 화요일 · 샘플 운영 현황" actions={<><button className="admin-button secondary"><CalendarDays/>오늘</button><a className="admin-button primary" href="/admin/products/new"><Plus/>상품 등록</a></>}/><div className="admin-kpi-grid"><KPICard label="오늘 주문" value="18" change="+12.4%" icon={ShoppingBag}/><KPICard label="결제 금액" value="42.8M" change="+8.2%" icon={BarChart3}/><KPICard label="장착 확인 대기" value="7" change="3건 긴급" icon={ClipboardCheck} warning/><KPICard label="문의·AS" value="3" change={eventCount === null ? "접수 동기화 중" : `저장된 이벤트 ${eventCount}건`} icon={MessageCircle}/></div><div className="admin-dashboard-grid"><section className="admin-card order-status-card"><div className="admin-card-head"><div><h2>주문 현황</h2><p>최근 7일 처리 상태</p></div><a href="/admin/orders">전체 주문 <ChevronRight/></a></div><div className="mini-chart"><div className="chart-bars">{[48,64,52,80,68,88,76].map((height,index)=><span key={index}><i style={{height:`${height}%`}}/><b>{["월","화","수","목","금","토","일"][index]}</b></span>)}</div><div className="chart-summary"><strong>126</strong><span>이번 주 주문</span><small>지난주 112건</small></div></div><div className="status-summary-row"><span><i className="blue"/>접수 <b>22</b></span><span><i className="amber"/>준비 <b>18</b></span><span><i className="green"/>배송 <b>14</b></span><span><i className="gray"/>완료 <b>72</b></span></div></section><section className="admin-card attention-card"><div className="admin-card-head"><div><h2>확인 필요</h2><p>우선 처리가 필요한 항목</p></div></div><AttentionRow icon={Warehouse} color="error" title="재고 부족" count="4" copy="안전 재고 이하 SKU" href="/admin/inventory"/><AttentionRow icon={Truck} color="warning" title="해외발주 지연" count="2" copy="예상 일정 초과" href="/admin/purchase-orders"/><AttentionRow icon={ClipboardCheck} color="info" title="적합성 검수 대기" count="7" copy="근거 확인 필요" href="/admin/fitments"/><AttentionRow icon={CalendarDays} color="warning" title="장착 일정 충돌" count="1" copy="8월 12일 · 분당" href="/admin/bookings"/></section></div><div className="admin-dashboard-grid lower"><section className="admin-card recent-orders"><div className="admin-card-head"><div><h2>최근 주문</h2><p>실시간 접수 순</p></div><a href="/admin/orders">전체 보기 <ChevronRight/></a></div><AdminTable compact/></section><section className="admin-card timeline-card"><div className="admin-card-head"><div><h2>해외발주 진행</h2><p>상태 변경이 필요한 건</p></div><a href="/admin/purchase-orders">전체 보기 <ChevronRight/></a></div>{["PO-260731-08", "PO-260728-04", "PO-260721-11"].map((code,index)=><div className="po-row" key={code}><span className={`po-icon c${index}`}><Truck/></span><div><strong>{code}</strong><small>{["선적 서류 확인 대기","통관 일정 업데이트 필요","입고 완료 처리 대기"][index]}</small></div><span className={`status-badge ${["warning","info","success"][index]}`}>{["선적","통관","입고"][index]}</span></div>)}</section></div></>;
+  const todayKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date());
+  const todayOrders = orderData?.orders.filter((order) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date(order.createdAt)) === todayKey) ?? [];
+  const receivedAmount = orderData?.orders.reduce((sum, order) => sum + order.totalAmount, 0) ?? 0;
+  const statusCount = (status: string) => orderData?.orders.filter((order) => order.status === status).length ?? 0;
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date();
+    date.setDate(date.getDate() - (6 - index));
+    const key = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(date);
+    return {
+      key,
+      label: new Intl.DateTimeFormat("ko-KR", { weekday: "short", timeZone: "Asia/Seoul" }).format(date),
+      count: orderData?.orders.filter((order) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date(order.createdAt)) === key).length ?? 0,
+    };
+  });
+  const maxDaily = Math.max(1, ...days.map((day) => day.count));
+  return <><AdminPageHeader eyebrow="OVERVIEW" title="운영 대시보드" copy="PostgreSQL 주문 데이터 기준" actions={<><button className="admin-button secondary"><CalendarDays/>오늘</button><a className="admin-button primary" href="/admin/orders"><ShoppingBag/>주문 확인</a></>}/><div className="admin-kpi-grid"><KPICard label="오늘 주문" value={orderData ? String(todayOrders.length) : "-"} change={`전체 ${orderData?.total ?? 0}건`} icon={ShoppingBag}/><KPICard label="접수 금액" value={orderData ? `${(receivedAmount / 1_000_000).toFixed(1)}M` : "-"} change="최근 100건 합계" icon={BarChart3}/><KPICard label="결제 확인 대기" value={String(orderData?.orders.filter((order) => order.paymentStatus === "PENDING").length ?? 0)} change="PG 연동 전 수동 확인" icon={ClipboardCheck} warning/><KPICard label="저장 이벤트" value={eventCount === null ? "-" : String(eventCount)} change="주문·문의·운영 이벤트" icon={MessageCircle}/></div><div className="admin-dashboard-grid"><section className="admin-card order-status-card"><div className="admin-card-head"><div><h2>주문 현황</h2><p>최근 7일 DB 접수 건</p></div><a href="/admin/orders">전체 주문 <ChevronRight/></a></div><div className="mini-chart"><div className="chart-bars">{days.map((day)=><span key={day.key}><i style={{height:`${day.count ? Math.max(12, (day.count / maxDaily) * 100) : 4}%`}}/><b>{day.label}</b></span>)}</div><div className="chart-summary"><strong>{days.reduce((sum, day) => sum + day.count, 0)}</strong><span>최근 7일 주문</span><small>실제 DB 기준</small></div></div><div className="status-summary-row"><span><i className="blue"/>접수 <b>{statusCount("RECEIVED")}</b></span><span><i className="amber"/>준비 <b>{statusCount("PREPARING")}</b></span><span><i className="green"/>배송 <b>{statusCount("SHIPPED")}</b></span><span><i className="gray"/>완료 <b>{statusCount("COMPLETED")}</b></span></div></section><section className="admin-card attention-card"><div className="admin-card-head"><div><h2>확인 필요</h2><p>DB 주문 기준 우선 처리 항목</p></div></div><AttentionRow icon={ClipboardCheck} color="warning" title="결제 확인 대기" count={String(orderData?.orders.filter((order) => order.paymentStatus === "PENDING").length ?? 0)} copy="PG 미연동 주문" href="/admin/orders"/><AttentionRow icon={Package} color="info" title="신규 접수" count={String(statusCount("RECEIVED"))} copy="상품 준비 전 주문" href="/admin/orders"/><AttentionRow icon={Truck} color="success" title="배송 중" count={String(statusCount("SHIPPED"))} copy="완료 처리 전 주문" href="/admin/orders"/></section></div><div className="admin-dashboard-grid lower"><section className="admin-card recent-orders"><div className="admin-card-head"><div><h2>최근 주문</h2><p>PostgreSQL 실시간 접수 순</p></div><a href="/admin/orders">전체 보기 <ChevronRight/></a></div><AdminTable compact/></section><section className="admin-card timeline-card"><div className="admin-card-head"><div><h2>운영 안내</h2><p>주문 데이터 처리 기준</p></div></div><div className="admin-db-note"><Database/><div><strong>실제 주문 DB 연결됨</strong><small>결제 완료 처리는 PG 연동 후 자동화할 수 있습니다.</small></div></div></section></div></>;
 }
 
 function AdminPageHeader({ eyebrow, title, copy, actions }: { eyebrow: string; title: string; copy: string; actions?: React.ReactNode }) { return <div className="admin-page-header"><div><span>{eyebrow}</span><h1>{title}</h1><p>{copy}</p></div><div>{actions}</div></div>; }
@@ -813,14 +982,30 @@ function AdminModule({ path, showToast }: { path: string; showToast: (message: s
   const isDetail = path.split("/").length > 3;
   const [drawerOpen, setDrawerOpen] = useState(isDetail);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState<StoredOrder | null>(null);
   const submitChange = async () => { await saveAction(key === "inventory" ? "inventory" : "fitment", { module: key, reason: "샘플 운영 검증", actor: "김아라" }); setDialogOpen(false); showToast("변경 내용과 사유를 저장하고 감사 로그를 생성했습니다."); };
   if (key === "roles") return <PermissionModule meta={meta} showToast={showToast}/>;
   if (key === "fitments") return <FitmentModule meta={meta} showToast={showToast}/>;
-  return <><AdminPageHeader eyebrow={meta.eyebrow} title={meta.title} copy={meta.copy} actions={<><button className="admin-button secondary"><SlidersHorizontal/>보기 설정</button><button className="admin-button primary" onClick={() => key === "inventory" ? setDialogOpen(true) : setDrawerOpen(true)}><Plus/>{meta.action}</button></>}/><div className="admin-filter-bar"><label><Search/><input placeholder={`${meta.title} 검색`}/></label><button>상태 <ChevronDown/></button><button>업데이트일 <ChevronDown/></button><span>필터 0개</span><button className="filter-reset"><RotateCcw/>초기화</button></div><section className="admin-table-card"><div className="table-meta"><strong>전체 {key === "orders" ? "248" : "32"}개</strong><div><button>열 표시 <ChevronDown/></button><button>내보내기</button></div></div><AdminTable module={key} onOpen={() => setDrawerOpen(true)}/></section>{drawerOpen && <DetailDrawer module={key} close={() => setDrawerOpen(false)} onChange={() => setDialogOpen(true)}/>} {dialogOpen && <ReasonDialog module={key} close={() => setDialogOpen(false)} submit={submitChange}/>}</>;
+  return <><AdminPageHeader eyebrow={meta.eyebrow} title={meta.title} copy={meta.copy} actions={<><button className="admin-button secondary"><SlidersHorizontal/>보기 설정</button><button className="admin-button primary" onClick={() => key === "inventory" ? setDialogOpen(true) : key === "orders" ? window.location.reload() : setDrawerOpen(true)}>{key === "orders" ? <RotateCcw/> : <Plus/>}{key === "orders" ? "주문 새로고침" : meta.action}</button></>}/><div className="admin-filter-bar"><label><Search/><input placeholder={`${meta.title} 검색`}/></label><button>상태 <ChevronDown/></button><button>업데이트일 <ChevronDown/></button><span>필터 0개</span><button className="filter-reset"><RotateCcw/>초기화</button></div><section className="admin-table-card"><div className="table-meta"><strong>{key === "orders" ? "PostgreSQL 실시간 주문" : "전체 32개"}</strong><div><button>열 표시 <ChevronDown/></button><button>내보내기</button></div></div><AdminTable module={key} onOpen={(order) => { setSelectedOrder(order ?? null); setDrawerOpen(true); }}/></section>{drawerOpen && <DetailDrawer module={key} order={selectedOrder} close={() => setDrawerOpen(false)} onChange={() => setDialogOpen(true)}/>} {dialogOpen && <ReasonDialog module={key} close={() => setDialogOpen(false)} submit={submitChange}/>}</>;
 }
 
-function AdminTable({ module = "orders", compact = false, onOpen }: { module?: string; compact?: boolean; onOpen?: () => void }) {
-  const data = module === "inventory" ? [
+function AdminTable({ module = "orders", compact = false, onOpen }: { module?: string; compact?: boolean; onOpen?: (order?: StoredOrder) => void }) {
+  const [storedOrders, setStoredOrders] = useState<StoredOrder[] | null>(module === "orders" ? null : []);
+  const [loadError, setLoadError] = useState("");
+  useEffect(() => {
+    if (module !== "orders") return;
+    fetch(`/api/orders?limit=${compact ? 4 : 100}`)
+      .then(async (response) => {
+        const data = (await response.json()) as { orders?: StoredOrder[]; error?: string };
+        if (!response.ok) throw new Error(data.error ?? "주문을 불러오지 못했습니다.");
+        setStoredOrders(Array.isArray(data.orders) ? data.orders : []);
+      })
+      .catch((reason: unknown) => {
+        setLoadError(reason instanceof Error ? reason.message : "주문을 불러오지 못했습니다.");
+        setStoredOrders([]);
+      });
+  }, [compact, module]);
+  const staticData = module === "inventory" ? [
     ["TB-BMW-G8X-VCE-001", "BMW G8X Valved Cat-back", "12", "3", "9", "정상"],
     ["TB-MB-W205-ABE-002", "AMG W205 Axle-back", "4", "2", "2", "부족"],
     ["TB-AU-B9-VCE-003", "Audi RS5 B9 Valved", "0", "0", "0", "예약판매"],
@@ -832,18 +1017,23 @@ function AdminTable({ module = "orders", compact = false, onOpen }: { module?: s
     ["08.04 11:42", "김아라", "재고 조정", "TB-BMW-G8X", "+2", "운영 입고"],
     ["08.04 10:18", "박도윤", "적합성 변경", "FIT-0082", "조건부 → 확인", "근거 검수"],
     ["08.04 09:31", "김아라", "개인정보 조회", "CUS-1048", "주문 상담", "CS 처리"],
-  ] : [
-    ["TB-260804-0142", "김민준", "BMW G8X Cat-back", "3,200,000원", "상품 준비", "11:42"],
-    ["TB-260804-0141", "이서윤", "AMG W205 Axle-back", "2,450,000원", "결제 완료", "10:58"],
-    ["TB-260804-0140", "최도윤", "Audi RS5 Valved", "2,900,000원", "상담 대기", "09:24"],
-    ["TB-260803-0139", "박하린", "Porsche 992 Tip", "780,000원", "취소 요청", "어제"],
-  ];
+  ] : [];
+  const data = module === "orders" ? (storedOrders ?? []).map((order) => [
+    order.orderNumber,
+    `${order.customerName} · ${order.customerEmail}`,
+    order.item?.productName ?? "상품 정보 없음",
+    `${formatPrice(order.totalAmount)}원`,
+    `${orderStatusLabels[order.status] ?? order.status} · ${paymentStatusLabels[order.paymentStatus] ?? order.paymentStatus}`,
+    new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Seoul" }).format(new Date(order.createdAt)),
+  ]) : staticData;
   const headers = module === "inventory" ? ["SKU", "상품", "실재고", "예약", "가용", "상태"] : module === "products" ? ["SKU", "상품명", "유형", "판매가", "상태", "수정일"] : module === "audit-logs" ? ["일시", "작업자", "행동", "대상", "변경", "사유"] : ["주문번호", "고객", "상품", "결제금액", "상태", "접수"];
-  return <div className="admin-table-wrap"><table className={compact ? "compact" : ""}><thead><tr><th><input type="checkbox" aria-label="전체 선택"/></th>{headers.map((header)=><th key={header}>{header}<ChevronDown/></th>)}<th/></tr></thead><tbody>{data.slice(0,compact?4:data.length).map((row,index)=><tr key={row[0]} onClick={onOpen}><td><input type="checkbox" aria-label={`${row[0]} 선택`}/></td>{row.map((cell,cellIndex)=><td key={cellIndex}>{cellIndex===0?<strong>{cell}</strong>:cellIndex===4?<span className={`table-status s${index}`}>{cell}</span>:cell}</td>)}<td><button aria-label="행 메뉴">•••</button></td></tr>)}</tbody></table></div>;
+  const loading = module === "orders" && storedOrders === null;
+  return <div className="admin-table-wrap"><table className={compact ? "compact" : ""}><thead><tr><th><input type="checkbox" aria-label="전체 선택"/></th>{headers.map((header)=><th key={header}>{header}<ChevronDown/></th>)}<th/></tr></thead><tbody>{loading ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>DB 주문을 불러오는 중입니다…</td></tr> : loadError ? <tr><td className="admin-table-state error" colSpan={headers.length + 2}>{loadError}</td></tr> : data.length === 0 ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>아직 접수된 주문이 없습니다.</td></tr> : data.slice(0,compact?4:data.length).map((row,index)=><tr key={row[0]} onClick={() => onOpen?.(module === "orders" ? storedOrders?.[index] : undefined)}><td><input type="checkbox" aria-label={`${row[0]} 선택`} onClick={(event) => event.stopPropagation()}/></td>{row.map((cell,cellIndex)=><td key={cellIndex}>{cellIndex===0?<strong>{cell}</strong>:cellIndex===4?<span className={`table-status s${index % 4}`}>{cell}</span>:cell}</td>)}<td><button aria-label="행 메뉴">•••</button></td></tr>)}</tbody></table></div>;
 }
 
-function DetailDrawer({ module, close, onChange }: { module:string; close:()=>void; onChange:()=>void }) {
-  return <div className="drawer-backdrop" onMouseDown={close}><aside className="detail-drawer" role="dialog" aria-modal="true" aria-label={`${moduleMeta[module]?.title ?? "상세"} 상세`} onMouseDown={(e)=>e.stopPropagation()}><header><div><span>{moduleMeta[module]?.eyebrow}</span><h2>{module === "orders" ? "주문 TB-260804-0142" : "BMW G8X Valved Cat-back"}</h2></div><button onClick={close}><X/></button></header><div className="drawer-tabs"><button className="active">기본 정보</button><button>변경 이력</button><button>감사 로그</button></div><div className="drawer-content"><div className="drawer-status"><span className="status-badge info"><Package/>상품 준비</span><small>2026.08.04 11:42 업데이트</small></div><h3>핵심 정보</h3><dl><div><dt>상품</dt><dd>BMW G80/G82 Valved Cat-back Exhaust</dd></div><div><dt>SKU</dt><dd>TB-BMW-G8X-VCE-001</dd></div><div><dt>차량</dt><dd>BMW M3 G80 · 2022 · 3.0</dd></div><div><dt>적합성 Snapshot</dt><dd><span className="status-badge success"><CheckCircle2/>장착 확인</span></dd></div><div><dt>재고 유형</dt><dd>국내 재고</dd></div></dl><div className="drawer-evidence"><ShieldCheck/><div><strong>변경은 감사 로그에 기록됩니다</strong><p>상태 변경에는 사유 입력이 필요합니다.</p></div></div></div><footer><button className="admin-button secondary" onClick={close}>닫기</button><button className="admin-button primary" onClick={onChange}>상태 변경</button></footer></aside></div>;
+function DetailDrawer({ module, order, close, onChange }: { module:string; order?:StoredOrder | null; close:()=>void; onChange:()=>void }) {
+  const isStoredOrder = module === "orders" && order;
+  return <div className="drawer-backdrop" onMouseDown={close}><aside className="detail-drawer" role="dialog" aria-modal="true" aria-label={`${moduleMeta[module]?.title ?? "상세"} 상세`} onMouseDown={(e)=>e.stopPropagation()}><header><div><span>{moduleMeta[module]?.eyebrow}</span><h2>{isStoredOrder ? `주문 ${order.orderNumber}` : module === "orders" ? "주문 상세" : "BMW G8X Valved Cat-back"}</h2></div><button onClick={close}><X/></button></header><div className="drawer-tabs"><button className="active">기본 정보</button><button>변경 이력</button><button>감사 로그</button></div><div className="drawer-content"><div className="drawer-status"><span className="status-badge info"><Package/>{isStoredOrder ? orderStatusLabels[order.status] ?? order.status : "상품 준비"}</span><small>{isStoredOrder ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul" }).format(new Date(order.createdAt)) : "상세 항목을 선택해 주세요"}</small></div><h3>핵심 정보</h3>{isStoredOrder ? <dl><div><dt>고객</dt><dd>{order.customerName} · {order.customerEmail}</dd></div><div><dt>상품</dt><dd>{order.item?.productName ?? "상품 정보 없음"}</dd></div><div><dt>SKU</dt><dd>{order.item?.productSku ?? "-"}</dd></div><div><dt>수량 / 금액</dt><dd>{order.item?.quantity ?? 0}개 · {formatPrice(order.totalAmount)}원</dd></div><div><dt>주문 상태</dt><dd>{orderStatusLabels[order.status] ?? order.status}</dd></div><div><dt>결제 상태</dt><dd>{paymentStatusLabels[order.paymentStatus] ?? order.paymentStatus}</dd></div><div><dt>수령 방식</dt><dd>{order.fulfillmentMethod === "INSTALLER_DELIVERY" ? "장착점 배송" : "일반 배송"}</dd></div></dl> : <dl><div><dt>상품</dt><dd>BMW G80/G82 Valved Cat-back Exhaust</dd></div><div><dt>SKU</dt><dd>TB-BMW-G8X-VCE-001</dd></div><div><dt>차량</dt><dd>BMW M3 G80 · 2022 · 3.0</dd></div></dl>}<div className="drawer-evidence"><ShieldCheck/><div><strong>{isStoredOrder ? "PostgreSQL에 저장된 주문입니다" : "변경은 감사 로그에 기록됩니다"}</strong><p>{isStoredOrder ? "주문 생성 이벤트와 최초 상태 이력이 함께 기록됐습니다." : "상태 변경에는 사유 입력이 필요합니다."}</p></div></div></div><footer><button className="admin-button secondary" onClick={close}>닫기</button>{!isStoredOrder && <button className="admin-button primary" onClick={onChange}>상태 변경</button>}</footer></aside></div>;
 }
 
 function ReasonDialog({ module, close, submit }: { module:string; close:()=>void; submit:()=>void }) {

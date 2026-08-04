@@ -24,6 +24,10 @@ test("replaces the starter with the product-specific storefront", async () => {
   assert.match(app, /vehicleUrl\(finderSelection\)/);
   assert.match(app, /storedProductToCatalogProduct/);
   assert.match(app, /DatabaseProductDetailPage/);
+  assert.match(app, /ProductDetailAdminModule/);
+  assert.match(app, /상품 상세·수정/);
+  assert.match(app, /수정하고 공개/);
+  assert.match(app, /retainedImageIds/);
   assert.match(app, /\/api\/products\?scope=public/);
   assert.match(app, /ProductCatalogLoading/);
   assert.match(app, /databaseProducts === null/);
@@ -53,11 +57,12 @@ test("replaces the starter with the product-specific storefront", async () => {
 });
 
 test("defines catch-all customer and admin routes plus persistent actions", async () => {
-  const [catchAll, actions, ordersApi, productsApi, inquiriesApi, adminSessionApi, adminAuth, database, migration, orderMigration, productMigration, inquiryMigration, vercel, packageJson] = await Promise.all([
+  const [catchAll, actions, ordersApi, productsApi, productDetailApi, inquiriesApi, adminSessionApi, adminAuth, database, migration, orderMigration, productMigration, inquiryMigration, vercel, packageJson] = await Promise.all([
     readFile(new URL("app/[...path]/page.tsx", root), "utf8"),
     readFile(new URL("app/api/actions/route.ts", root), "utf8"),
     readFile(new URL("app/api/orders/route.ts", root), "utf8"),
     readFile(new URL("app/api/products/route.ts", root), "utf8"),
+    readFile(new URL("app/api/products/[productId]/route.ts", root), "utf8"),
     readFile(new URL("app/api/inquiries/route.ts", root), "utf8"),
     readFile(new URL("app/api/admin/session/route.ts", root), "utf8"),
     readFile(new URL("lib/admin-auth.ts", root), "utf8"),
@@ -85,6 +90,10 @@ test("defines catch-all customer and admin routes plus persistent actions", asyn
   assert.match(productsApi, /PRODUCT_CREATED/);
   assert.match(productsApi, /publicCatalog/);
   assert.match(productsApi, /products\.status, "PUBLISHED"/);
+  assert.match(productDetailApi, /export async function PATCH/);
+  assert.match(productDetailApi, /PRODUCT_UPDATED/);
+  assert.match(productDetailApi, /retainedImageIds/);
+  assert.match(productDetailApi, /updatedAt: new Date\(\)/);
   assert.match(inquiriesApi, /supportInquiries/);
   assert.match(inquiriesApi, /isAdminRequest/);
   assert.match(inquiriesApi, /INQUIRY_CREATED/);

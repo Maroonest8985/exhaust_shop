@@ -1516,13 +1516,155 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
         return;
       }
       showToast(`${data.product.name} 상품을 등록했습니다.`);
-      window.location.href = `/admin/products?created=${encodeURIComponent(data.product.id)}`;
+      window.location.href = `/admin/products/${encodeURIComponent(data.product.id)}`;
     } catch {
       setError("네트워크 연결을 확인한 뒤 다시 시도해 주세요.");
       setProcessing(false);
     }
   };
   return <><AdminPageHeader eyebrow="NEW PRODUCT" title="상품 등록" copy="기본 정보부터 이미지, 상세 설명과 제품 사양까지 한 번에 등록합니다." actions={<><a className="admin-button secondary" href="/admin/products"><X/>취소</a><button className="admin-button primary" disabled={processing} onClick={save}><Check/>{processing ? "저장 중…" : form.status === "PUBLISHED" ? "등록하고 공개" : "임시저장"}</button></>}/>{error && <div className="product-editor-error" role="alert"><AlertTriangle/>{error}</div>}<div className="product-editor-layout"><div className="product-editor-main"><section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>01</span><div><h2>기본 정보</h2><p>고객과 운영자가 상품을 식별하는 핵심 정보입니다.</p></div></div><div className="product-form-grid"><label><span>SKU <b>필수</b></span><input value={form.sku} onChange={(event) => updateSku(event.target.value)} placeholder="TB-BMW-G8X-VCE-001"/></label><label><span>URL 슬러그 <b>필수</b></span><input value={form.slug} onChange={(event) => update("slug", event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="bmw-g8x-valved-catback"/></label><label className="wide"><span>상품명 <b>필수</b></span><input value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="BMW G80/G82 Valved Cat-back Exhaust"/></label><label><span>카테고리</span><select value={form.category} onChange={(event) => update("category", event.target.value)}><option>VALVED CAT-BACK</option><option>AXLE-BACK</option><option>VALVED EXHAUST</option><option>EXHAUST TIP</option><option>ACCESSORY</option></select></label><label><span>재질</span><input value={form.material} onChange={(event) => update("material", event.target.value)} placeholder="SUS304 · Carbon Quad Tip"/></label><label><span>판매가 <b>필수</b></span><div className="price-input"><input type="number" min="0" step="1000" value={form.price} onChange={(event) => update("price", event.target.value)} placeholder="3200000"/><small>원</small></div></label><label><span>재고 유형</span><select value={form.stockType} onChange={(event) => update("stockType", event.target.value)}><option value="DOMESTIC">국내 재고</option><option value="OVERSEAS_ORDER">해외발주</option><option value="PREORDER">예약판매</option><option value="OUT_OF_STOCK">품절</option></select></label><label><span>적합성 상태</span><select value={form.fitmentStatus} onChange={(event) => update("fitmentStatus", event.target.value)}><option value="NO_DATA">데이터 없음</option><option value="VERIFIED">장착 확인</option><option value="CONDITIONAL">조건부 장착</option><option value="CONSULTATION_REQUIRED">상담 필요</option><option value="INCOMPATIBLE">장착 불가</option></select></label></div></section><section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>02</span><div><h2>상품 설명</h2><p>목록 요약과 상세 페이지에 표시할 내용을 작성합니다.</p></div></div><label className="product-textarea"><span>한 줄 요약 <b>필수</b></span><textarea value={form.summary} onChange={(event) => update("summary", event.target.value)} maxLength={500} placeholder="차량 하부 구조와 순정 장착 포인트를 고려한 밸브 배기 시스템"/><small>{form.summary.length}/500</small></label><label className="product-textarea detail"><span>상세 설명 <b>필수</b></span><textarea value={form.description} onChange={(event) => update("description", event.target.value)} maxLength={10000} placeholder="제품 특징, 구성품, 장착 조건, 고객이 확인해야 할 내용을 구체적으로 입력하세요."/><small>{form.description.length}/10,000</small></label></section><section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>03</span><div><h2>제품 사양</h2><p>상세 페이지의 기술 사양 표에 표시됩니다.</p></div></div><div className="spec-editor">{specifications.map((item, index)=><div className="spec-editor-row" key={index}><input value={item.label} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, label: event.target.value } : spec))} placeholder="항목 (예: 파이프 직경)"/><input value={item.value} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, value: event.target.value } : spec))} placeholder="값 (예: 76mm)"/><button aria-label={`사양 ${index + 1} 삭제`} onClick={() => setSpecifications((current) => current.filter((_, specIndex) => specIndex !== index))}><X/></button></div>)}<button className="add-spec" onClick={() => setSpecifications((current) => [...current, { label: "", value: "" }])}><Plus/>사양 항목 추가</button></div></section></div><aside className="product-editor-side"><section className="admin-card product-editor-card image-editor"><div className="product-editor-section-title"><span>04</span><div><h2>상품 이미지</h2><p>첫 번째 이미지가 대표 이미지입니다.</p></div></div><input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={chooseImages}/><button className="image-drop-button" onClick={() => fileInput.current?.click()}><ImagePlus/><strong>이미지 선택</strong><span>JPG, PNG, WebP · 최대 4장<br/>자동 리사이즈 후 저장</span></button>{selectedImages.length > 0 && <div className="image-preview-grid">{selectedImages.map((image, index)=><article key={image.url}><img src={image.url} alt={`상품 이미지 미리보기 ${index + 1}`}/>{index === 0 && <b>대표</b>}<button aria-label={`이미지 ${index + 1} 삭제`} onClick={() => removeImage(index)}><X/></button><small>{Math.ceil(image.file.size / 1024)}KB</small></article>)}</div>}<label className="image-alt-field"><span>이미지 대체 텍스트</span><input value={form.imageAltText} onChange={(event) => update("imageAltText", event.target.value)} placeholder={form.name || "상품 이미지 설명"}/></label></section><section className="admin-card product-editor-card publish-editor"><div className="product-editor-section-title"><span>05</span><div><h2>공개 설정</h2><p>저장 직후의 노출 상태입니다.</p></div></div><label className={form.status === "DRAFT" ? "selected" : ""}><input type="radio" checked={form.status === "DRAFT"} onChange={() => update("status", "DRAFT")}/><FileText/><div><strong>임시저장</strong><span>어드민에서만 확인</span></div>{form.status === "DRAFT" && <CheckCircle2/>}</label><label className={form.status === "PUBLISHED" ? "selected" : ""}><input type="radio" checked={form.status === "PUBLISHED"} onChange={() => update("status", "PUBLISHED")}/><CheckCircle2/><div><strong>즉시 공개</strong><span>저장 후 고객에게 이미지 공개</span></div>{form.status === "PUBLISHED" && <CheckCircle2/>}</label><div className="publish-note"><ShieldCheck/><span>상품 등록과 공개 상태는 감사 로그에 기록됩니다.</span></div></section></aside></div></>;
+}
+
+function ProductDetailAdminModule({ productId, showToast }: { productId: string; showToast: (message: string) => void }) {
+  const [form, setForm] = useState<null | {
+    sku: string; slug: string; name: string; category: string; material: string; price: string;
+    status: string; stockType: string; fitmentStatus: string; summary: string; description: string; imageAltText: string;
+  }>(null);
+  const [specifications, setSpecifications] = useState<Array<{ label: string; value: string }>>([]);
+  const [existingImages, setExistingImages] = useState<StoredProduct["images"]>([]);
+  const [selectedImages, setSelectedImages] = useState<Array<{ file: File; url: string }>>([]);
+  const [createdAt, setCreatedAt] = useState("");
+  const [updatedAt, setUpdatedAt] = useState("");
+  const [imageProcessing, setImageProcessing] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/products/${encodeURIComponent(productId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = (await response.json()) as { product?: StoredProduct; error?: string };
+        if (response.status === 401) { window.location.href = "/admin/login"; return; }
+        if (!response.ok || !data.product) throw new Error(data.error ?? "상품 정보를 불러오지 못했습니다.");
+        if (!active) return;
+        const product = data.product;
+        setForm({
+          sku: product.sku, slug: product.slug, name: product.name, category: product.category,
+          material: product.material, price: String(product.price), status: product.status,
+          stockType: product.stockType, fitmentStatus: product.fitmentStatus, summary: product.summary,
+          description: product.description, imageAltText: product.images[0]?.altText ?? product.name,
+        });
+        setSpecifications(product.specifications.length ? product.specifications : [{ label: "", value: "" }]);
+        setExistingImages(product.images);
+        setCreatedAt(product.createdAt);
+        setUpdatedAt(product.updatedAt);
+      })
+      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : "상품 정보를 불러오지 못했습니다."); });
+    return () => { active = false; };
+  }, [productId]);
+
+  const update = (key: NonNullable<typeof form> extends infer T ? keyof T : never, value: string) => {
+    setForm((current) => current ? { ...current, [key]: value } : current);
+  };
+  const chooseImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!incoming.length) return;
+    if (existingImages.length + selectedImages.length + incoming.length > 4) { setError("상품 이미지는 최대 4장까지 유지할 수 있습니다."); return; }
+    setError("");
+    setImageProcessing(true);
+    try {
+      const compressed = await Promise.all(incoming.map(compressProductImage));
+      const next = compressed.map((file) => ({ file, url: URL.createObjectURL(file) }));
+      const totalBytes = existingImages.reduce((sum, image) => sum + image.byteSize, 0) + [...selectedImages, ...next].reduce((sum, image) => sum + image.file.size, 0);
+      if (totalBytes > 4_000_000) {
+        next.forEach((image) => URL.revokeObjectURL(image.url));
+        throw new Error("전체 이미지 용량은 4MB 이하여야 합니다.");
+      }
+      setSelectedImages((current) => [...current, ...next]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "이미지를 처리하지 못했습니다.");
+    } finally {
+      setImageProcessing(false);
+    }
+  };
+  const removeNewImage = (index: number) => setSelectedImages((current) => current.filter((image, imageIndex) => {
+    if (index === imageIndex) URL.revokeObjectURL(image.url);
+    return index !== imageIndex;
+  }));
+  const save = async () => {
+    if (!form || processing) return;
+    if (imageProcessing) { setError("이미지를 처리하는 중입니다."); return; }
+    setError("");
+    const completeSpecs = specifications.filter((item) => item.label.trim() && item.value.trim());
+    const price = Number(form.price);
+    const missing: string[] = [];
+    if (form.sku.length < 3) missing.push("SKU");
+    if (!/^[a-z0-9][a-z0-9-]+$/.test(form.slug)) missing.push("URL 슬러그");
+    if (form.name.trim().length < 3) missing.push("상품명");
+    if (!form.category.trim()) missing.push("카테고리");
+    if (!form.material.trim()) missing.push("재질");
+    if (!form.price || !Number.isSafeInteger(price) || price < 0 || price > 2_000_000_000) missing.push("판매가");
+    if (!form.summary.trim()) missing.push("한 줄 요약");
+    if (!form.description.trim()) missing.push("상세 설명");
+    if (!completeSpecs.length) missing.push("제품 사양");
+    if (existingImages.length + selectedImages.length === 0) missing.push("상품 이미지");
+    if (missing.length) { setError(`다음 항목을 확인해 주세요: ${missing.join(", ")}`); return; }
+    setProcessing(true);
+    try {
+      const body = new FormData();
+      Object.entries(form).forEach(([key, value]) => body.append(key, value));
+      body.append("specifications", JSON.stringify(completeSpecs));
+      body.append("retainedImageIds", JSON.stringify(existingImages.map((image) => image.id)));
+      selectedImages.forEach(({ file }) => body.append("images", file));
+      const response = await fetch(`/api/products/${encodeURIComponent(productId)}`, { method: "PATCH", body });
+      const data = (await response.json()) as { product?: StoredProduct; error?: string };
+      if (response.status === 401) { window.location.href = "/admin/login"; return; }
+      if (!response.ok || !data.product) { setError(data.error ?? "상품을 수정하지 못했습니다."); return; }
+      selectedImages.forEach((image) => URL.revokeObjectURL(image.url));
+      setSelectedImages([]);
+      setExistingImages(data.product.images);
+      setSpecifications(data.product.specifications);
+      setUpdatedAt(data.product.updatedAt);
+      setForm({
+        sku: data.product.sku, slug: data.product.slug, name: data.product.name, category: data.product.category,
+        material: data.product.material, price: String(data.product.price), status: data.product.status,
+        stockType: data.product.stockType, fitmentStatus: data.product.fitmentStatus, summary: data.product.summary,
+        description: data.product.description, imageAltText: data.product.images[0]?.altText ?? data.product.name,
+      });
+      showToast(`${data.product.name} 상품 정보를 수정했습니다.`);
+    } catch {
+      setError("네트워크 연결을 확인한 뒤 다시 시도해 주세요.");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  if (!form) return <div className="admin-editor-loading" role="status">{error ? <><AlertTriangle/><span>{error}</span><a className="admin-button secondary" href="/admin/products">상품 목록</a></> : <><RotateCcw/><span>상품 상세 정보를 불러오는 중입니다…</span></>}</div>;
+  const formatAdminDate = (value: string) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul" }).format(new Date(value));
+  return <>
+    <AdminPageHeader eyebrow="PRODUCT DETAIL" title="상품 상세·수정" copy="등록된 정보와 이미지, 공개 상태를 확인하고 수정합니다." actions={<><a className="admin-button secondary" href="/admin/products"><ArrowLeft/>목록</a>{form.status === "PUBLISHED" && <a className="admin-button secondary" href={`/products/${form.slug}`}><Search/>스토어 보기</a>}<button className="admin-button primary" disabled={processing} onClick={save}><Check/>{processing ? "저장 중…" : form.status === "PUBLISHED" ? "수정하고 공개" : "수정사항 임시저장"}</button></>}/>
+    <div className={`product-editor-context ${form.status === "PUBLISHED" ? "published" : "draft"}`}><div><span>현재 상태</span><strong>{form.status === "PUBLISHED" ? "스토어 공개" : "임시저장"}</strong></div><p>{form.status === "PUBLISHED" ? "고객 상품 목록과 상세 페이지에 노출 중입니다." : "즉시 공개를 선택하고 저장하면 스토어에 노출됩니다."}</p><small>등록 {formatAdminDate(createdAt)} · 최근 수정 {formatAdminDate(updatedAt)}</small></div>
+    {error && <div className="product-editor-error" role="alert"><AlertTriangle/>{error}</div>}
+    <div className="product-editor-layout"><div className="product-editor-main">
+      <section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>01</span><div><h2>기본 정보</h2><p>SKU, 주소, 가격과 판매 조건을 수정합니다.</p></div></div><div className="product-form-grid">
+        <label><span>SKU <b>필수</b></span><input value={form.sku} onChange={(event) => update("sku", event.target.value.toUpperCase().replace(/[^A-Z0-9._-]/g, ""))}/></label>
+        <label><span>URL 슬러그 <b>필수</b></span><input value={form.slug} onChange={(event) => update("slug", event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}/></label>
+        <label className="wide"><span>상품명 <b>필수</b></span><input value={form.name} onChange={(event) => update("name", event.target.value)}/></label>
+        <label><span>카테고리</span><select value={form.category} onChange={(event) => update("category", event.target.value)}><option>VALVED CAT-BACK</option><option>AXLE-BACK</option><option>VALVED EXHAUST</option><option>EXHAUST TIP</option><option>ACCESSORY</option></select></label>
+        <label><span>재질</span><input value={form.material} onChange={(event) => update("material", event.target.value)}/></label>
+        <label><span>판매가 <b>필수</b></span><div className="price-input"><input type="number" min="0" step="1000" value={form.price} onChange={(event) => update("price", event.target.value)}/><small>원</small></div></label>
+        <label><span>재고 유형</span><select value={form.stockType} onChange={(event) => update("stockType", event.target.value)}><option value="DOMESTIC">국내 재고</option><option value="OVERSEAS_ORDER">해외발주</option><option value="PREORDER">예약판매</option><option value="OUT_OF_STOCK">품절</option></select></label>
+        <label><span>적합성 상태</span><select value={form.fitmentStatus} onChange={(event) => update("fitmentStatus", event.target.value)}><option value="NO_DATA">데이터 없음</option><option value="VERIFIED">장착 확인</option><option value="CONDITIONAL">조건부 장착</option><option value="CONSULTATION_REQUIRED">상담 필요</option><option value="INCOMPATIBLE">장착 불가</option></select></label>
+      </div></section>
+      <section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>02</span><div><h2>상품 설명</h2><p>목록 요약과 상세 페이지에 표시됩니다.</p></div></div><label className="product-textarea"><span>한 줄 요약 <b>필수</b></span><textarea value={form.summary} onChange={(event) => update("summary", event.target.value)} maxLength={500}/><small>{form.summary.length}/500</small></label><label className="product-textarea detail"><span>상세 설명 <b>필수</b></span><textarea value={form.description} onChange={(event) => update("description", event.target.value)} maxLength={10000}/><small>{form.description.length}/10,000</small></label></section>
+      <section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>03</span><div><h2>제품 사양</h2><p>항목과 값을 수정하거나 추가합니다.</p></div></div><div className="spec-editor">{specifications.map((item, index) => <div className="spec-editor-row" key={index}><input value={item.label} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, label: event.target.value } : spec))}/><input value={item.value} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, value: event.target.value } : spec))}/><button aria-label={`사양 ${index + 1} 삭제`} onClick={() => setSpecifications((current) => current.filter((_, specIndex) => specIndex !== index))}><X/></button></div>)}<button className="add-spec" onClick={() => setSpecifications((current) => [...current, { label: "", value: "" }])}><Plus/>사양 항목 추가</button></div></section>
+    </div><aside className="product-editor-side">
+      <section className="admin-card product-editor-card image-editor"><div className="product-editor-section-title"><span>04</span><div><h2>상품 이미지</h2><p>기존 이미지를 유지·삭제하거나 새로 추가합니다.</p></div></div><input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={chooseImages}/><button className="image-drop-button" disabled={imageProcessing} onClick={() => fileInput.current?.click()}><ImagePlus/><strong>{imageProcessing ? "이미지 처리 중…" : "새 이미지 추가"}</strong><span>현재 {existingImages.length + selectedImages.length}/4장</span></button><div className="image-preview-grid">{existingImages.map((image, index) => <article key={image.id}><img src={image.url} alt={image.altText}/>{index === 0 && <b>대표</b>}<button aria-label={`기존 이미지 ${index + 1} 삭제`} onClick={() => setExistingImages((current) => current.filter((item) => item.id !== image.id))}><X/></button><small>저장됨</small></article>)}{selectedImages.map((image, index) => <article key={image.url}><img src={image.url} alt={`새 상품 이미지 ${index + 1}`}/>{existingImages.length + index === 0 && <b>대표</b>}<button aria-label={`새 이미지 ${index + 1} 삭제`} onClick={() => removeNewImage(index)}><X/></button><small>신규</small></article>)}</div><label className="image-alt-field"><span>이미지 대체 텍스트</span><input value={form.imageAltText} onChange={(event) => update("imageAltText", event.target.value)}/></label></section>
+      <section className="admin-card product-editor-card publish-editor"><div className="product-editor-section-title"><span>05</span><div><h2>공개 설정</h2><p>저장 후 스토어 노출 여부입니다.</p></div></div><label className={form.status === "DRAFT" ? "selected" : ""}><input type="radio" checked={form.status === "DRAFT"} onChange={() => update("status", "DRAFT")}/><FileText/><div><strong>임시저장</strong><span>어드민에서만 확인</span></div>{form.status === "DRAFT" && <CheckCircle2/>}</label><label className={form.status === "PUBLISHED" ? "selected" : ""}><input type="radio" checked={form.status === "PUBLISHED"} onChange={() => update("status", "PUBLISHED")}/><CheckCircle2/><div><strong>즉시 공개</strong><span>저장 후 고객에게 공개</span></div>{form.status === "PUBLISHED" && <CheckCircle2/>}</label><div className="publish-note"><ShieldCheck/><span>정보 수정과 상태 변경은 감사 로그에 기록됩니다.</span></div></section>
+    </aside></div>
+  </>;
 }
 
 function AdminModule({ path, showToast }: { path: string; showToast: (message: string) => void }) {
@@ -1537,11 +1679,12 @@ function AdminModule({ path, showToast }: { path: string; showToast: (message: s
   if (key === "roles") return <PermissionModule meta={meta} showToast={showToast}/>;
   if (key === "fitments") return <FitmentModule meta={meta} showToast={showToast}/>;
   if (key === "products" && path.endsWith("/new")) return <ProductCreateModule showToast={showToast}/>;
+  if (key === "products" && path.split("/")[3]) return <ProductDetailAdminModule productId={path.split("/")[3]} showToast={showToast}/>;
   const refreshable = key === "orders" || key === "support";
-  return <><AdminPageHeader eyebrow={meta.eyebrow} title={meta.title} copy={meta.copy} actions={<><button className="admin-button secondary"><SlidersHorizontal/>보기 설정</button><button className="admin-button primary" onClick={() => key === "inventory" ? setDialogOpen(true) : refreshable ? window.location.reload() : key === "products" ? window.location.href = "/admin/products/new" : setDrawerOpen(true)}>{refreshable ? <RotateCcw/> : <Plus/>}{key === "orders" ? "주문 새로고침" : key === "support" ? "문의 새로고침" : meta.action}</button></>}/><div className="admin-filter-bar"><label><Search/><input placeholder={`${meta.title} 검색`}/></label><button>상태 <ChevronDown/></button><button>업데이트일 <ChevronDown/></button><span>필터 0개</span><button className="filter-reset"><RotateCcw/>초기화</button></div><section className="admin-table-card"><div className="table-meta"><strong>{key === "orders" ? "PostgreSQL 실시간 주문" : key === "products" ? "PostgreSQL 실시간 상품" : key === "support" ? "PostgreSQL 실시간 문의" : "전체 32개"}</strong><div><button>열 표시 <ChevronDown/></button><button>내보내기</button></div></div><AdminTable module={key} onOpen={(record) => { if (key === "orders") setSelectedOrder((record as StoredOrder | undefined) ?? null); if (key === "support") setSelectedInquiry((record as StoredInquiry | undefined) ?? null); setDrawerOpen(true); }}/></section>{drawerOpen && <DetailDrawer module={key} order={selectedOrder} inquiry={selectedInquiry} close={() => setDrawerOpen(false)} onChange={() => setDialogOpen(true)}/>} {dialogOpen && <ReasonDialog module={key} close={() => setDialogOpen(false)} submit={submitChange}/>}</>;
+  return <><AdminPageHeader eyebrow={meta.eyebrow} title={meta.title} copy={meta.copy} actions={<><button className="admin-button secondary"><SlidersHorizontal/>보기 설정</button><button className="admin-button primary" onClick={() => key === "inventory" ? setDialogOpen(true) : refreshable ? window.location.reload() : key === "products" ? window.location.href = "/admin/products/new" : setDrawerOpen(true)}>{refreshable ? <RotateCcw/> : <Plus/>}{key === "orders" ? "주문 새로고침" : key === "support" ? "문의 새로고침" : meta.action}</button></>}/><div className="admin-filter-bar"><label><Search/><input placeholder={`${meta.title} 검색`}/></label><button>상태 <ChevronDown/></button><button>업데이트일 <ChevronDown/></button><span>필터 0개</span><button className="filter-reset"><RotateCcw/>초기화</button></div><section className="admin-table-card"><div className="table-meta"><strong>{key === "orders" ? "PostgreSQL 실시간 주문" : key === "products" ? "PostgreSQL 실시간 상품 · 행을 눌러 상세 확인" : key === "support" ? "PostgreSQL 실시간 문의" : "전체 32개"}</strong><div><button>열 표시 <ChevronDown/></button><button>내보내기</button></div></div><AdminTable module={key} onOpen={(record) => { if (key === "products" && record && "sku" in record) { window.location.href = `/admin/products/${encodeURIComponent(record.id)}`; return; } if (key === "orders") setSelectedOrder((record as StoredOrder | undefined) ?? null); if (key === "support") setSelectedInquiry((record as StoredInquiry | undefined) ?? null); setDrawerOpen(true); }}/></section>{drawerOpen && <DetailDrawer module={key} order={selectedOrder} inquiry={selectedInquiry} close={() => setDrawerOpen(false)} onChange={() => setDialogOpen(true)}/>} {dialogOpen && <ReasonDialog module={key} close={() => setDialogOpen(false)} submit={submitChange}/>}</>;
 }
 
-function AdminTable({ module = "orders", compact = false, onOpen }: { module?: string; compact?: boolean; onOpen?: (record?: StoredOrder | StoredInquiry) => void }) {
+function AdminTable({ module = "orders", compact = false, onOpen }: { module?: string; compact?: boolean; onOpen?: (record?: StoredOrder | StoredInquiry | StoredProduct) => void }) {
   const [storedOrders, setStoredOrders] = useState<StoredOrder[] | null>(module === "orders" ? null : []);
   const [storedProducts, setStoredProducts] = useState<StoredProduct[] | null>(module === "products" ? null : []);
   const [storedInquiries, setStoredInquiries] = useState<StoredInquiry[] | null>(module === "support" ? null : []);
@@ -1598,7 +1741,7 @@ function AdminTable({ module = "orders", compact = false, onOpen }: { module?: s
   const headers = module === "inventory" ? ["SKU", "상품", "실재고", "예약", "가용", "상태"] : module === "products" ? ["SKU", "상품명", "유형", "판매가", "상태", "수정일"] : module === "support" ? ["문의번호", "고객", "제목", "유형", "상태", "접수"] : module === "audit-logs" ? ["일시", "작업자", "행동", "대상", "변경", "사유"] : ["주문번호", "고객", "상품", "결제금액", "상태", "접수"];
   const loading = (module === "orders" && storedOrders === null) || (module === "products" && storedProducts === null) || (module === "support" && storedInquiries === null);
   const emptyCopy = module === "orders" ? "아직 접수된 주문이 없습니다." : module === "products" ? "아직 등록된 상품이 없습니다. 상품 등록 버튼으로 첫 상품을 추가하세요." : module === "support" ? "아직 접수된 문의가 없습니다." : "표시할 데이터가 없습니다.";
-  return <div className="admin-table-wrap"><table className={compact ? "compact" : ""}><thead><tr><th><input type="checkbox" aria-label="전체 선택"/></th>{headers.map((header)=><th key={header}>{header}<ChevronDown/></th>)}<th/></tr></thead><tbody>{loading ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>PostgreSQL 데이터를 불러오는 중입니다…</td></tr> : loadError ? <tr><td className="admin-table-state error" colSpan={headers.length + 2}>{loadError}</td></tr> : data.length === 0 ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>{emptyCopy}</td></tr> : data.slice(0,compact?4:data.length).map((row,index)=><tr key={row[0]} onClick={() => module === "products" ? undefined : onOpen?.(module === "orders" ? storedOrders?.[index] : module === "support" ? storedInquiries?.[index] : undefined)}><td><input type="checkbox" aria-label={`${row[0]} 선택`} onClick={(event) => event.stopPropagation()}/></td>{row.map((cell,cellIndex)=><td key={cellIndex}>{cellIndex===0?<strong>{cell}</strong>:cellIndex===4?<span className={`table-status s${index % 4}`}>{cell}</span>:cell}</td>)}<td><button aria-label="행 메뉴">•••</button></td></tr>)}</tbody></table></div>;
+  return <div className="admin-table-wrap"><table className={compact ? "compact" : ""}><thead><tr><th><input type="checkbox" aria-label="전체 선택"/></th>{headers.map((header)=><th key={header}>{header}<ChevronDown/></th>)}<th/></tr></thead><tbody>{loading ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>PostgreSQL 데이터를 불러오는 중입니다…</td></tr> : loadError ? <tr><td className="admin-table-state error" colSpan={headers.length + 2}>{loadError}</td></tr> : data.length === 0 ? <tr><td className="admin-table-state" colSpan={headers.length + 2}>{emptyCopy}</td></tr> : data.slice(0,compact?4:data.length).map((row,index)=><tr className={module === "products" ? "clickable" : ""} key={row[0]} onClick={() => onOpen?.(module === "orders" ? storedOrders?.[index] : module === "products" ? storedProducts?.[index] : module === "support" ? storedInquiries?.[index] : undefined)}><td><input type="checkbox" aria-label={`${row[0]} 선택`} onClick={(event) => event.stopPropagation()}/></td>{row.map((cell,cellIndex)=><td key={cellIndex}>{cellIndex===0?<strong>{cell}</strong>:cellIndex===4?<span className={`table-status s${index % 4}`}>{cell}</span>:cell}</td>)}<td><button aria-label="행 메뉴">•••</button></td></tr>)}</tbody></table></div>;
 }
 
 function DetailDrawer({ module, order, inquiry, close, onChange }: { module:string; order?:StoredOrder | null; inquiry?:StoredInquiry | null; close:()=>void; onChange:()=>void }) {

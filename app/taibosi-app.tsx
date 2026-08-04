@@ -1312,7 +1312,7 @@ function AdminApp({ path, showToast, toast }: { path: string; showToast: (messag
 }
 
 function AdminLogin() {
-  const [email, setEmail] = useState("admin@taibosi.demo");
+  const [email, setEmail] = useState("admin@admin.com");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [processing, setProcessing] = useState(false);
@@ -1345,7 +1345,7 @@ function AdminLogin() {
       setProcessing(false);
     }
   };
-  return <div className="admin-login"><div className="admin-login-brand"><BrandMark/><span>OPERATIONS</span></div><div className="admin-login-card"><div className="admin-lock"><LockKeyhole/></div><span className="eyebrow red">SECURE ADMIN</span><h1>운영자 로그인</h1><p>환경 변수에 등록된 운영자 계정으로 로그인하세요.</p><Field label="이메일" placeholder="admin@taibosi.demo" type="email" value={email} onValueChange={setEmail}/><Field label="비밀번호" placeholder="비밀번호 입력" type="password" value={password} onValueChange={setPassword}/>{error && <p className="admin-login-error" role="alert">{error}</p>}<button className="button primary full large" onClick={submit} disabled={processing}>{processing ? "확인 중…" : "로그인"}</button><div className="admin-security-note"><ShieldCheck/><span>성공한 로그인은 HttpOnly 세션 쿠키로 보호됩니다.</span></div><a href="/">고객 쇼핑몰로 돌아가기</a></div></div>;
+  return <div className="admin-login"><div className="admin-login-brand"><BrandMark/><span>OPERATIONS</span></div><div className="admin-login-card"><div className="admin-lock"><LockKeyhole/></div><span className="eyebrow red">SECURE ADMIN</span><h1>운영자 로그인</h1><p>환경 변수에 등록된 운영자 계정으로 로그인하세요.</p><Field label="이메일" placeholder="admin@admin.com" type="email" value={email} onValueChange={setEmail}/><Field label="비밀번호" placeholder="비밀번호 입력" type="password" value={password} onValueChange={setPassword}/>{error && <p className="admin-login-error" role="alert">{error}</p>}<button className="button primary full large" onClick={submit} disabled={processing}>{processing ? "확인 중…" : "로그인"}</button><div className="admin-security-note"><ShieldCheck/><span>성공한 로그인은 HttpOnly 세션 쿠키로 보호됩니다.</span></div><a href="/">고객 쇼핑몰로 돌아가기</a></div></div>;
 }
 
 function AdminSidebar({ path }: { path: string }) {

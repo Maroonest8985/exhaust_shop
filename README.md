@@ -80,7 +80,7 @@ PG가 아직 연결되지 않았으므로 주문은 `RECEIVED`, 결제는 `PENDI
 고객 `/login`, `/signup`은 제품 흐름 검증을 위한 UI 데모입니다. 운영자 `/admin/login`은 환경 변수의 계정을 확인하고 12시간 유효한 HttpOnly 세션 쿠키를 발급하며, 주문 조회 API는 이 세션이 있어야 사용할 수 있습니다.
 
 - 고객 데모: `taibosi.demo@example.com`
-- 운영자 데모: `admin@taibosi.demo`
+- 운영자 데모: `admin@admin.com`
 - 화면에 비밀번호를 하드코딩하지 않았으며 어떤 값도 실제 인증 자격증명으로 사용되지 않습니다.
 
 ## 역할별 권한

@@ -47,10 +47,12 @@ npm run db:generate
 
 ```bash
 DATABASE_URL=postgresql://user:password@host/database?sslmode=require
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=충분히-긴-운영자-비밀번호
-ADMIN_SESSION_SECRET=32바이트-이상의-무작위-문자열
+LOCAL_ADMIN_EMAIL=local-admin@example.com
+LOCAL_ADMIN_PASSWORD=충분히-긴-로컬-운영자-비밀번호
+LOCAL_ADMIN_SESSION_SECRET=32자-이상의-로컬-무작위-문자열
 ```
+
+로컬 개발 서버는 `LOCAL_ADMIN_*` 변수만 사용합니다. Vercel 프로덕션은 `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`을 별도로 사용합니다.
 
 ## Vercel 배포
 

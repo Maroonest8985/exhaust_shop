@@ -9,22 +9,50 @@ function safeEqual(left: string, right: string) {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+function credentialNames() {
+  return process.env.NODE_ENV === "production"
+    ? { email: "ADMIN_EMAIL", password: "ADMIN_PASSWORD", secret: "ADMIN_SESSION_SECRET" } as const
+    : { email: "LOCAL_ADMIN_EMAIL", password: "LOCAL_ADMIN_PASSWORD", secret: "LOCAL_ADMIN_SESSION_SECRET" } as const;
+}
+
+function credentials() {
+  const names = credentialNames();
+  return {
+    names,
+    email: process.env[names.email]?.trim(),
+    password: process.env[names.password],
+    secret: process.env[names.secret]?.trim(),
+  };
+}
+
+export function adminAuthConfigurationError() {
+  const current = credentials();
+  if (!current.email || !current.password) {
+    return `${current.names.email}과 ${current.names.password} 환경 변수를 설정해 주세요.`;
+  }
+  if (!current.secret || current.secret.length < 32) {
+    return `${current.names.secret} 환경 변수에 32자 이상의 임의 문자열을 설정해 주세요.`;
+  }
+  return null;
+}
+
 function signature(payload: string) {
-  const secret = process.env.ADMIN_SESSION_SECRET;
-  if (!secret) return "";
+  const secret = credentials().secret;
+  if (!secret || secret.length < 32) return null;
   return createHmac("sha256", secret).update(payload).digest("base64url");
 }
 
 export function verifyAdminCredentials(email: string, password: string) {
-  const expectedEmail = process.env.ADMIN_EMAIL;
-  const expectedPassword = process.env.ADMIN_PASSWORD;
+  const { email: expectedEmail, password: expectedPassword } = credentials();
   if (!expectedEmail || !expectedPassword) return false;
-  return safeEqual(email.trim().toLowerCase(), expectedEmail.trim().toLowerCase()) && safeEqual(password, expectedPassword);
+  return safeEqual(email.trim().toLowerCase(), expectedEmail.toLowerCase()) && safeEqual(password, expectedPassword);
 }
 
 export function createAdminSession(email: string) {
   const payload = Buffer.from(JSON.stringify({ email, exp: Math.floor(Date.now() / 1000) + sessionTtlSeconds })).toString("base64url");
-  return `${payload}.${signature(payload)}`;
+  const sessionSignature = signature(payload);
+  if (!sessionSignature) throw new Error("Admin authentication is not configured.");
+  return `${payload}.${sessionSignature}`;
 }
 
 export function isAdminRequest(request: Request) {
@@ -32,7 +60,8 @@ export function isAdminRequest(request: Request) {
   const token = cookie?.slice(adminCookieName.length + 1);
   if (!token) return false;
   const [payload, providedSignature] = token.split(".");
-  if (!payload || !providedSignature || !safeEqual(providedSignature, signature(payload))) return false;
+  const expectedSignature = payload ? signature(payload) : null;
+  if (!payload || !providedSignature || !expectedSignature || !safeEqual(providedSignature, expectedSignature)) return false;
   try {
     const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: number };
     return typeof session.exp === "number" && session.exp > Math.floor(Date.now() / 1000);

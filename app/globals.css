@@ -499,6 +499,10 @@ svg { width: 20px; height: 20px; stroke-width: 1.8; }
   .admin-shell { min-width:1120px; }.admin-sidebar { position:absolute; }.drawer-backdrop,.dialog-backdrop { position:fixed; }.detail-drawer { width:560px; }
 }
 
+.admin-topbar > button.admin-logout { width:auto; min-width:92px; display:flex; align-items:center; justify-content:center; gap:6px; padding:0 12px; border:1px solid #dfe1e4; color:#44474c; font-size:10px; font-weight:700; }
+.admin-topbar > button.admin-logout svg { width:14px; }
+.admin-topbar > button.admin-logout:disabled { color:#999ca2; cursor:wait; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
 }

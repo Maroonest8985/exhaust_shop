@@ -25,6 +25,7 @@ import {
   ImagePlus,
   LayoutDashboard,
   LockKeyhole,
+  LogOut,
   MapPin,
   Menu,
   MessageCircle,
@@ -1042,7 +1043,7 @@ function AdminApp({ path, showToast, toast }: { path: string; showToast: (messag
   const [authorized, setAuthorized] = useState(isLoginPage);
   useEffect(() => {
     if (isLoginPage) return;
-    fetch("/api/admin/session")
+    fetch("/api/admin/session", { cache: "no-store", credentials: "same-origin" })
       .then((response) => {
         if (!response.ok) {
           window.location.replace("/admin/login");
@@ -1054,7 +1055,7 @@ function AdminApp({ path, showToast, toast }: { path: string; showToast: (messag
   }, [isLoginPage]);
   if (isLoginPage) return <AdminLogin />;
   if (!authorized) return <div className="admin-auth-loading"><LockKeyhole/><span>운영자 세션을 확인하는 중입니다…</span></div>;
-  return <div className="admin-shell"><AdminSidebar path={path}/><div className="admin-workspace"><AdminTopbar/><main className="admin-main">{path === "/admin" ? <AdminDashboard/> : <AdminModule path={path} showToast={showToast}/>}</main></div>{toast && <div className="toast" role="status"><CheckCircle2 size={18}/>{toast}</div>}</div>;
+  return <div className="admin-shell"><AdminSidebar path={path}/><div className="admin-workspace"><AdminTopbar showToast={showToast}/><main className="admin-main">{path === "/admin" ? <AdminDashboard/> : <AdminModule path={path} showToast={showToast}/>}</main></div>{toast && <div className="toast" role="status"><CheckCircle2 size={18}/>{toast}</div>}</div>;
 }
 
 function AdminLogin() {
@@ -1070,6 +1071,7 @@ function AdminLogin() {
       const response = await fetch("/api/admin/session", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ email, password }),
       });
       const data = (await response.json()) as { error?: string };
@@ -1078,7 +1080,13 @@ function AdminLogin() {
         setProcessing(false);
         return;
       }
-      window.location.href = "/admin";
+      const sessionCheck = await fetch("/api/admin/session", { cache: "no-store", credentials: "same-origin" });
+      if (!sessionCheck.ok) {
+        setError("로그인 세션을 저장하지 못했습니다. 관리자 세션 환경 변수 설정을 확인해 주세요.");
+        setProcessing(false);
+        return;
+      }
+      window.location.replace("/admin");
     } catch {
       setError("네트워크 연결을 확인해 주세요.");
       setProcessing(false);
@@ -1091,8 +1099,21 @@ function AdminSidebar({ path }: { path: string }) {
   return <aside className="admin-sidebar"><div className="admin-logo"><BrandMark/><span>OPERATIONS</span></div><nav>{adminNav.map((group) => <div key={group.group}><span>{group.group}</span>{group.items.map(([href, label, Icon]) => <a href={href} className={(href === "/admin" ? path === href : path.startsWith(href)) ? "active" : ""} key={href}><Icon/>{label}{label === "문의·AS" && <b>3</b>}</a>)}</div>)}</nav><div className="admin-user"><span>AK</span><div><strong>김아라</strong><small>Super Admin</small></div><ChevronRight/></div></aside>;
 }
 
-function AdminTopbar() {
-  return <header className="admin-topbar"><div><Search/><input placeholder="주문번호, 상품, 고객 검색" aria-label="관리자 통합 검색"/><kbd>⌘ K</kbd></div><span className="admin-sample">PostgreSQL 연결</span><button aria-label="알림"><Bell/><b>3</b></button><button aria-label="설정"><Settings/></button></header>;
+function AdminTopbar({ showToast }: { showToast: (message: string) => void }) {
+  const [loggingOut, setLoggingOut] = useState(false);
+  const logout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      const response = await fetch("/api/admin/session", { method: "DELETE", credentials: "same-origin" });
+      if (!response.ok) throw new Error("Logout failed");
+      window.location.replace("/admin/login");
+    } catch {
+      setLoggingOut(false);
+      showToast("로그아웃을 처리하지 못했습니다. 다시 시도해 주세요.");
+    }
+  };
+  return <header className="admin-topbar"><div><Search/><input placeholder="주문번호, 상품, 고객 검색" aria-label="관리자 통합 검색"/><kbd>⌘ K</kbd></div><span className="admin-sample">PostgreSQL 연결</span><button aria-label="알림"><Bell/><b>3</b></button><button aria-label="설정"><Settings/></button><button className="admin-logout" onClick={logout} disabled={loggingOut}><LogOut/>{loggingOut ? "로그아웃 중…" : "로그아웃"}</button></header>;
 }
 
 function AdminDashboard() {

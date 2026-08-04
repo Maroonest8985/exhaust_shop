@@ -22,6 +22,9 @@ test("replaces the starter with the product-specific storefront", async () => {
   assert.match(app, /vehicleGenerations/);
   assert.match(app, /compatibleVehicles/);
   assert.match(app, /vehicleUrl\(finderSelection\)/);
+  assert.match(app, /AdminTopbar showToast/);
+  assert.match(app, /method: "DELETE"/);
+  assert.match(app, /로그아웃/);
   assert.match(layout, /Taibosi Exhaust Korea/);
   assert.match(css, /--red:\s*#d93a2f/i);
   assert.doesNotMatch(`${page}${layout}${packageJson}`, /codex-preview|react-loading-skeleton|Starter Project/);
@@ -29,11 +32,13 @@ test("replaces the starter with the product-specific storefront", async () => {
 });
 
 test("defines catch-all customer and admin routes plus persistent actions", async () => {
-  const [catchAll, actions, ordersApi, productsApi, database, migration, orderMigration, productMigration, vercel, packageJson] = await Promise.all([
+  const [catchAll, actions, ordersApi, productsApi, adminSessionApi, adminAuth, database, migration, orderMigration, productMigration, vercel, packageJson] = await Promise.all([
     readFile(new URL("app/[...path]/page.tsx", root), "utf8"),
     readFile(new URL("app/api/actions/route.ts", root), "utf8"),
     readFile(new URL("app/api/orders/route.ts", root), "utf8"),
     readFile(new URL("app/api/products/route.ts", root), "utf8"),
+    readFile(new URL("app/api/admin/session/route.ts", root), "utf8"),
+    readFile(new URL("lib/admin-auth.ts", root), "utf8"),
     readFile(new URL("db/index.ts", root), "utf8"),
     readFile(new URL("drizzle/0000_sour_chronomancer.sql", root), "utf8"),
     readFile(new URL("drizzle/0001_warm_rage.sql", root), "utf8"),
@@ -52,6 +57,11 @@ test("defines catch-all customer and admin routes plus persistent actions", asyn
   assert.match(productsApi, /request\.formData/);
   assert.match(productsApi, /productImages/);
   assert.match(productsApi, /PRODUCT_CREATED/);
+  assert.match(adminSessionApi, /adminAuthConfigurationError/);
+  assert.match(adminSessionApi, /no-store/);
+  assert.match(adminAuth, /LOCAL_ADMIN_EMAIL/);
+  assert.match(adminAuth, /LOCAL_ADMIN_PASSWORD/);
+  assert.match(adminAuth, /LOCAL_ADMIN_SESSION_SECRET/);
   assert.match(database, /process\.env\.DATABASE_URL/);
   assert.match(database, /drizzle-orm\/postgres-js/);
   assert.match(migration, /CREATE TABLE "commerce_events"/);

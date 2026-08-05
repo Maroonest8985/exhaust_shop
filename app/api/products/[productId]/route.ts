@@ -2,6 +2,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { auditLogs, productImages, products, productVehicleFitments } from "../../../../db/schema";
 import { isAdminRequest } from "../../../../lib/admin-auth";
+import { parseProductOptionGroups, type ProductOptionGroup } from "../../../../lib/product-options";
 import { existingVehicleGenerationIds, parseVehicleGenerationIds, productVehicleFitmentsByProductIds, type ProductVehicleFitmentSummary } from "../../../../lib/product-vehicle-fitments";
 
 export const runtime = "nodejs";
@@ -53,6 +54,7 @@ function serializeProduct(product: typeof products.$inferSelect, images: Array<t
     summary: product.summary,
     description: product.description,
     specifications: product.specifications,
+    optionGroups: product.optionGroups,
     vehicleFitments,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
@@ -122,6 +124,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
     let specifications: Array<{ label: string; value: string }> = [];
     let retainedImageIds: string[] = [];
     let vehicleGenerationIds: string[] = [];
+    let optionGroups: ProductOptionGroup[] = [];
     try {
       specifications = parseSpecifications(field(formData, "specifications", 20_000));
       const parsedImageIds = JSON.parse(field(formData, "retainedImageIds", 10_000)) as unknown;
@@ -129,6 +132,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
         ? parsedImageIds.filter((value): value is string => typeof value === "string")
         : [];
       vehicleGenerationIds = parseVehicleGenerationIds(field(formData, "vehicleGenerationIds", 10_000));
+      optionGroups = parseProductOptionGroups(field(formData, "optionGroups", 30_000) || "[]");
     } catch {
       return Response.json({ error: "제품 사양, 이미지 또는 적용 차량 정보 형식이 올바르지 않습니다." }, { status: 422 });
     }
@@ -194,6 +198,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
         summary,
         description,
         specifications,
+        optionGroups,
         updatedAt: new Date(),
       }).where(eq(products.id, productId));
       if (removedImageIds.length > 0) {
@@ -218,8 +223,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
         targetId: productId,
         reason: existing.product.status !== status ? `상품 상태 변경: ${existing.product.status} → ${status}` : "운영자 상품 정보 수정",
         diff: {
-          before: { sku: existing.product.sku, slug: existing.product.slug, status: existing.product.status, price: existing.product.price, imageCount: existing.images.length, isUniversalFitment: existing.product.isUniversalFitment, vehicleGenerationIds: existing.vehicleFitments.map((fitment) => fitment.vehicleGenerationId) },
-          after: { sku, slug, status, price, imageCount: retainedImages.length + encodedImages.length, isUniversalFitment, vehicleGenerationIds: isUniversalFitment ? [] : vehicleGenerationIds },
+          before: { sku: existing.product.sku, slug: existing.product.slug, status: existing.product.status, price: existing.product.price, imageCount: existing.images.length, optionGroupCount: existing.product.optionGroups.length, isUniversalFitment: existing.product.isUniversalFitment, vehicleGenerationIds: existing.vehicleFitments.map((fitment) => fitment.vehicleGenerationId) },
+          after: { sku, slug, status, price, imageCount: retainedImages.length + encodedImages.length, optionGroupCount: optionGroups.length, isUniversalFitment, vehicleGenerationIds: isUniversalFitment ? [] : vehicleGenerationIds },
         },
       });
     });

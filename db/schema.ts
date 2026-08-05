@@ -53,6 +53,7 @@ export const products = pgTable(
     summary: text("summary").notNull(),
     description: text("description").notNull(),
     specifications: jsonb("specifications").$type<Array<{ label: string; value: string }>>().notNull().default([]),
+    optionGroups: jsonb("option_groups").$type<Array<{ name: string; options: Array<{ name: string; additionalPrice: number }> }>>().notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

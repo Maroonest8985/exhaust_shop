@@ -404,6 +404,12 @@ svg { width: 20px; height: 20px; stroke-width: 1.8; }
 .option-chips button, .payment-options button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 1; padding: 0 12px; border: 1px solid var(--gray-200); border-radius: 8px; background: white; font-size: 12px; }
 .option-chips button.selected, .payment-options button.selected { border-color: var(--red); background: #fff8f7; color: var(--red); font-weight: 700; box-shadow: 0 0 0 1px var(--red); }
 .option-chips svg { width: 14px; }
+.product-option-groups { display: grid; gap: 14px; }
+.product-option-groups .option-block { margin-top: 0; }
+.option-chips { flex-wrap: wrap; }
+.option-chips button { min-width: 128px; flex: 1 1 140px; }
+.option-chips button small { color: var(--gray-500); font-size: 10px; font-weight: 600; }
+.option-chips button.selected small { color: inherit; }
 .quantity-row { display: flex; align-items: center; justify-content: space-between; margin: 18px 0; }
 .quantity-row > div, .quantity-control { display: flex; align-items: center; border: 1px solid var(--gray-200); border-radius: 7px; overflow: hidden; }
 .quantity-row button, .quantity-control button { width: 36px; height: 36px; display: grid; place-items: center; border: 0; background: white; }
@@ -519,6 +525,11 @@ svg { width: 20px; height: 20px; stroke-width: 1.8; }
 /* vehicle master database */
 .admin-button.danger { border-color:#e8b8b3;background:var(--error-bg);color:var(--error); }
 .product-editor-error > button { margin-left:auto;border:0;background:transparent;color:inherit;font-size:9px;font-weight:800;text-decoration:underline; }
+.product-option-editor { display: grid; gap: 14px; }
+.product-option-editor .product-editor-section-title { margin-bottom: 0; }
+.product-option-editor-summary { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 7px; background: var(--gray-50); color: var(--gray-700); font-size: 10px; font-weight: 800; }.product-option-editor-summary small { color: var(--gray-500); font-weight: 500; }
+.admin-option-group { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--gray-200); border-radius: 9px; background: white; }.admin-option-group-head { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }.admin-option-group label { display: grid; gap: 6px; min-width: 0; }.admin-option-group label > span { color: var(--gray-600); font-size: 10px; font-weight: 800; }.admin-option-group input { width: 100%; min-width: 0; min-height: 38px; padding: 0 10px; border: 1px solid var(--gray-200); border-radius: 6px; background: white; color: var(--gray-900); font-size: 12px; }
+.admin-option-values { display: grid; gap: 8px; }.admin-option-value { display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; gap: 8px; align-items: end; }.admin-option-value .price-input { min-height: 38px; }.icon-danger-button { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid var(--gray-200); border-radius: 6px; background: white; color: var(--gray-500); }.icon-danger-button:hover:not(:disabled) { border-color: #efc5c0; color: var(--red); }.icon-danger-button:disabled { cursor: not-allowed; opacity: .35; }.icon-danger-button svg { width: 15px; }.add-option-group { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed var(--gray-300); border-radius: 7px; background: var(--gray-50); color: var(--gray-700); font-size: 11px; font-weight: 800; }.add-option-group:hover:not(:disabled) { border-color: var(--red); color: var(--red); }.add-option-group:disabled { opacity: .5; cursor: not-allowed; }
 .vehicle-master-stats { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px; }
 .vehicle-master-stats article { min-height:72px;display:flex;align-items:center;gap:11px;padding:14px 16px;border:1px solid #e1e3e6;border-radius:9px;background:white; }
 .vehicle-master-stats article > svg { width:20px;color:var(--red); }

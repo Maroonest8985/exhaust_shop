@@ -3,6 +3,7 @@ import { count, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { auditLogs, commerceEvents, orderItems, orders, orderStatusHistory, products as productTable } from "../../../db/schema";
 import { isAdminRequest } from "../../../lib/admin-auth";
+import { resolveProductOptionSelections } from "../../../lib/product-options";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ const fulfillmentMethods = new Set(["INSTALLER_DELIVERY", "STANDARD_DELIVERY"]);
 type OrderLineInput = {
   productSku?: unknown;
   quantity?: unknown;
-  optionName?: unknown;
+  selectedOptions?: unknown;
   vehicleSnapshot?: unknown;
 };
 
@@ -117,11 +118,11 @@ export async function POST(request: Request) {
     const idempotencyKey = text(body.idempotencyKey, 36);
     const rawItems: OrderLineInput[] = Array.isArray(body.items)
       ? body.items.filter((item): item is OrderLineInput => typeof item === "object" && item !== null)
-      : [{ productSku: body.productSku, quantity: body.quantity, optionName: body.optionName, vehicleSnapshot: body.vehicleSnapshot }];
+      : [{ productSku: body.productSku, quantity: body.quantity, selectedOptions: body.selectedOptions, vehicleSnapshot: body.vehicleSnapshot }];
     const inputItems = rawItems.map((item) => ({
       productSku: text(item.productSku, 80),
       quantity: typeof item.quantity === "number" ? Math.trunc(item.quantity) : 0,
-      optionName: text(item.optionName, 200),
+      selectedOptions: item.selectedOptions,
       vehicleSnapshot: text(item.vehicleSnapshot, 300),
     }));
     const customerName = text(body.customerName, 100);
@@ -170,10 +171,17 @@ export async function POST(request: Request) {
       return Response.json({ error: "판매 중인 상품 정보를 다시 확인해 주세요. 장바구니를 새로 구성해 주세요." }, { status: 422 });
     }
 
-    const resolvedItems = inputItems.map((item) => {
-      const product = catalogBySku.get(item.productSku)!;
-      return { input: item, product, lineTotal: product.price * item.quantity };
-    });
+    let resolvedItems: Array<{ input: typeof inputItems[number]; product: typeof catalogRows[number]; optionName: string; unitPrice: number; lineTotal: number }>;
+    try {
+      resolvedItems = inputItems.map((item) => {
+        const product = catalogBySku.get(item.productSku)!;
+        const selected = resolveProductOptionSelections(product.optionGroups ?? [], item.selectedOptions);
+        const unitPrice = product.price + selected.additionalPrice;
+        return { input: item, product, optionName: selected.optionName, unitPrice, lineTotal: unitPrice * item.quantity };
+      });
+    } catch {
+      return Response.json({ error: "상품 옵션을 다시 선택해 주세요." }, { status: 422 });
+    }
     const subtotal = resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0);
     const orderNumber = makeOrderNumber();
     const created = await db.transaction(async (tx) => {
@@ -204,16 +212,16 @@ export async function POST(request: Request) {
 
       const items = await tx
         .insert(orderItems)
-        .values(resolvedItems.map(({ input, product, lineTotal }) => ({
+        .values(resolvedItems.map(({ input, product, optionName, unitPrice, lineTotal }) => ({
           orderId: order.id,
           productSku: product.sku,
           productName: product.name,
-          optionName: input.optionName || null,
+          optionName: optionName || null,
           vehicleSnapshot: input.vehicleSnapshot || null,
           fitmentSnapshot: product.fitmentStatus,
           stockTypeSnapshot: product.stockType,
           quantity: input.quantity,
-          unitPrice: product.price,
+          unitPrice,
           lineTotal,
         })))
         .returning();
@@ -226,7 +234,7 @@ export async function POST(request: Request) {
         actorType: "CUSTOMER",
         actorId: customerEmail,
       });
-      const itemSummary = resolvedItems.map(({ input, lineTotal }) => ({ productSku: input.productSku, quantity: input.quantity, lineTotal }));
+      const itemSummary = resolvedItems.map(({ input, optionName, unitPrice, lineTotal }) => ({ productSku: input.productSku, optionName, quantity: input.quantity, unitPrice, lineTotal }));
       await tx.insert(commerceEvents).values({
         kind: "order",
         status: "RECEIVED",

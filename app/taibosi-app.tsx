@@ -54,9 +54,30 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Analytics } from "@vercel/analytics/next"
 
 type Fitment = "VERIFIED" | "CONDITIONAL" | "CONSULTATION_REQUIRED" | "INCOMPATIBLE" | "NO_DATA";
 type Stock = "DOMESTIC" | "OVERSEAS_ORDER" | "PREORDER" | "OUT_OF_STOCK";
+type ProductOptionValue = { name: string; additionalPrice: number };
+type ProductOptionGroup = { name: string; options: ProductOptionValue[] };
+type ProductOptionSelection = { groupName: string; optionName: string };
+
+function hasValidProductOptionGroups(groups: ProductOptionGroup[]) {
+  if (groups.length > 10) return false;
+  const groupNames = new Set<string>();
+  return groups.every((group) => {
+    const groupName = group.name.trim();
+    if (!groupName || groupNames.has(groupName) || group.options.length < 1 || group.options.length > 10) return false;
+    groupNames.add(groupName);
+    const optionNames = new Set<string>();
+    return group.options.every((option) => {
+      const optionName = option.name.trim();
+      if (!optionName || optionNames.has(optionName) || !Number.isSafeInteger(option.additionalPrice) || option.additionalPrice < 0 || option.additionalPrice > 2_000_000_000) return false;
+      optionNames.add(optionName);
+      return true;
+    });
+  });
+}
 
 type Product = {
   slug: string;
@@ -72,6 +93,7 @@ type Product = {
   kicker: string;
   compatibleVehicles: string[];
   isUniversalFitment?: boolean;
+  optionGroups: ProductOptionGroup[];
 };
 
 type CartItem = {
@@ -83,6 +105,7 @@ type CartItem = {
   fitment: Fitment;
   stock: Stock;
   optionName: string;
+  selectedOptions: ProductOptionSelection[];
   vehicleSnapshot: string | null;
   quantity: number;
 };
@@ -194,6 +217,7 @@ type StoredProduct = {
   summary: string;
   description: string;
   specifications: Array<{ label: string; value: string }>;
+  optionGroups: ProductOptionGroup[];
   vehicleFitments: Array<{ vehicleGenerationId: string; maker: string; model: string; generation: string }>;
   createdAt: string;
   updatedAt: string;
@@ -266,6 +290,7 @@ const products: Product[] = [
     image: heroImage,
     kicker: "정교한 밸브 제어와 선명한 리어 디테일",
     compatibleVehicles: ["BMW|M3|G80", "BMW|M4|G82"],
+    optionGroups: [],
   },
   {
     slug: "amg-w205-axleback",
@@ -279,6 +304,7 @@ const products: Product[] = [
     image: garageImage,
     kicker: "순정 라인을 고려한 리어 섹션 구성",
     compatibleVehicles: ["Mercedes-AMG|C63|W205"],
+    optionGroups: [],
   },
   {
     slug: "audi-rs5-b9-valved",
@@ -292,6 +318,7 @@ const products: Product[] = [
     image: redBmwImage,
     kicker: "차량 세부 사양 확인 후 안내",
     compatibleVehicles: ["Audi|RS5|B9"],
+    optionGroups: [],
   },
   {
     slug: "porsche-992-titanium-tip",
@@ -305,6 +332,7 @@ const products: Product[] = [
     image: redBmwImage,
     kicker: "브러시드 티타늄 피니시",
     compatibleVehicles: ["Porsche|911|992"],
+    optionGroups: [],
   },
 ];
 
@@ -329,6 +357,7 @@ function storedProductToCatalogProduct(product: StoredProduct): Product {
     kicker: product.summary,
     compatibleVehicles: product.vehicleFitments.map((fitment) => `${fitment.maker}|${fitment.model}|${fitment.generation}`),
     isUniversalFitment: product.isUniversalFitment,
+    optionGroups: product.optionGroups ?? [],
   };
 }
 
@@ -505,7 +534,13 @@ function readStoredCart(): CartItem[] {
         const candidate = item as Partial<CartItem>;
         return typeof candidate.sku === "string" && typeof candidate.slug === "string" && typeof candidate.name === "string" && typeof candidate.price === "number" && candidate.price >= 0 && typeof candidate.image === "string" && typeof candidate.optionName === "string" && typeof candidate.quantity === "number" && (["VERIFIED", "CONDITIONAL", "CONSULTATION_REQUIRED", "INCOMPATIBLE", "NO_DATA"] as unknown[]).includes(candidate.fitment) && (["DOMESTIC", "OVERSEAS_ORDER", "PREORDER", "OUT_OF_STOCK"] as unknown[]).includes(candidate.stock);
       })
-      .map((item) => ({ ...item, quantity: Math.min(10, Math.max(1, Math.trunc(item.quantity))) }));
+      .map((item) => ({
+        ...item,
+        selectedOptions: Array.isArray(item.selectedOptions)
+          ? item.selectedOptions.filter((selection): selection is ProductOptionSelection => Boolean(selection) && typeof selection === "object" && typeof selection.groupName === "string" && typeof selection.optionName === "string")
+          : [],
+        quantity: Math.min(10, Math.max(1, Math.trunc(item.quantity))),
+      }));
   } catch {
     return [];
   }
@@ -590,7 +625,13 @@ export function TaibosiApp({ path, vehicleQuery = {} }: { path: string; vehicleQ
     window.localStorage.setItem(cartStorageKey, JSON.stringify(cartItems));
   }, [cartItems, cartReady]);
 
-  const addProductToCart = (product: Product, quantity: number, optionName: string) => {
+  const addProductToCart = (product: Product, quantity: number, selectedOptions: ProductOptionSelection[]) => {
+    const additionalPrice = selectedOptions.reduce((sum, selection) => {
+      const group = product.optionGroups.find((candidate) => candidate.name === selection.groupName);
+      const option = group?.options.find((candidate) => candidate.name === selection.optionName);
+      return sum + (option?.additionalPrice ?? 0);
+    }, 0);
+    const optionName = selectedOptions.length ? selectedOptions.map((selection) => `${selection.groupName}: ${selection.optionName}`).join(" / ") : "선택 옵션 없음";
     setCartItems((current) => {
       const index = current.findIndex((item) => item.sku === product.sku && item.optionName === optionName);
       if (index >= 0) {
@@ -600,11 +641,12 @@ export function TaibosiApp({ path, vehicleQuery = {} }: { path: string; vehicleQ
         sku: product.sku,
         slug: product.slug,
         name: product.name,
-        price: product.price,
+        price: product.price + additionalPrice,
         image: product.image,
         fitment: product.fitment,
         stock: product.stock,
         optionName,
+        selectedOptions,
         vehicleSnapshot: product.compatibleVehicles[0]?.replaceAll("|", " · ") ?? null,
         quantity: Math.min(10, Math.max(1, quantity)),
       }];
@@ -1050,7 +1092,7 @@ function FilterRadio({ label, checked = false, onClick }: { label: string; check
   return <button className={`filter-radio ${checked ? "checked" : ""}`} onClick={onClick}><span>{checked && <Check />}</span>{label}</button>;
 }
 
-function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: string; addToCart: (product: Product, quantity: number, optionName: string) => void; showToast: (message: string) => void }) {
+function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: string; addToCart: (product: Product, quantity: number, selectedOptions: ProductOptionSelection[]) => void; showToast: (message: string) => void }) {
   const [storedProduct, setStoredProduct] = useState<StoredProduct | null | undefined>(undefined);
   useEffect(() => {
     let active = true;
@@ -1072,8 +1114,8 @@ function DatabaseProductDetailPage({ slug, addToCart, showToast }: { slug: strin
   return <ProductDetailPage product={storedProductToCatalogProduct(storedProduct)} addToCart={addToCart} showToast={showToast} />;
 }
 
-function ProductDetailPage({ product, addToCart, showToast }: { product: Product; addToCart: (product: Product, quantity: number, optionName: string) => void; showToast: (message: string) => void }) {
-  const [tip, setTip] = useState("Carbon Quad");
+function ProductDetailPage({ product, addToCart, showToast }: { product: Product; addToCart: (product: Product, quantity: number, selectedOptions: ProductOptionSelection[]) => void; showToast: (message: string) => void }) {
+  const [selectedOptions, setSelectedOptions] = useState<ProductOptionSelection[]>([]);
   const [quantity, setQuantity] = useState(1);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const galleryImages = product.images?.length ? product.images : [{ url: product.image, altText: `${product.name} 제품 이미지` }];
@@ -1083,23 +1125,39 @@ function ProductDetailPage({ product, addToCart, showToast }: { product: Product
   const stock = stockMap[product.stock];
   const FitIcon = fitment.icon;
   const StockIcon = stock.icon;
+  const selectedAdditionalPrice = selectedOptions.reduce((sum, selection) => {
+    const group = product.optionGroups.find((candidate) => candidate.name === selection.groupName);
+    return sum + (group?.options.find((candidate) => candidate.name === selection.optionName)?.additionalPrice ?? 0);
+  }, 0);
+  const selectedPrice = product.price + selectedAdditionalPrice;
+  const optionsReady = selectedOptions.length === product.optionGroups.length;
+  const selectOption = (groupName: string, optionName: string) => setSelectedOptions((current) => [
+    ...current.filter((selection) => selection.groupName !== groupName),
+    { groupName, optionName },
+  ]);
+  useEffect(() => {
+    setSelectedOptions([]);
+    setQuantity(1);
+  }, [product.sku]);
   const cta = product.stock === "OUT_OF_STOCK" ? "재입고 알림" : product.fitment === "CONSULTATION_REQUIRED" ? "적합성 상담" : product.stock === "OVERSEAS_ORDER" ? "해외발주로 주문" : product.stock === "PREORDER" ? "예약 주문하기" : "장바구니 담기";
   const handleCta = async () => {
     if (product.stock === "OUT_OF_STOCK") {
       await saveAction("restock", { product: product.sku }); showToast("재입고 알림 신청을 접수했습니다.");
     } else if (product.fitment === "CONSULTATION_REQUIRED") {
       await saveAction("inquiry", { product: product.sku, vehicle: "BMW M3 G80" }); window.location.href = "/support/inquiry";
-    } else addToCart(product, quantity, `${tip} · Valve Controller`);
+    } else if (!optionsReady) {
+      showToast("필수 옵션을 모두 선택해 주세요.");
+    } else addToCart(product, quantity, selectedOptions);
   };
   return (
     <div className="product-detail page-light">
       <div className="grid-container detail-top-space"><nav className="breadcrumb"><a href="/">홈</a><ChevronRight /><a href="/products">제품</a><ChevronRight /><span>{product.name}</span></nav>
         <div className="product-detail-grid">
           <section className="product-gallery"><div className="gallery-main"><img key={galleryImages[galleryIndex].url} src={galleryImages[galleryIndex].url} alt={galleryImages[galleryIndex].altText || `${product.name} 제품 이미지 ${galleryIndex + 1}`} /><span className="image-index">{String(galleryIndex + 1).padStart(2, "0")} / {String(galleryImages.length).padStart(2, "0")}</span><button className="gallery-arrow left" aria-label="이전 이미지" onClick={previousImage} disabled={galleryImages.length < 2}><ArrowLeft /></button><button className="gallery-arrow right" aria-label="다음 이미지" onClick={nextImage} disabled={galleryImages.length < 2}><ArrowRight /></button></div><div className="gallery-thumbs">{galleryImages.map((image, index) => <button className={index === galleryIndex ? "active" : ""} key={`${image.url}-${index}`} onClick={() => setGalleryIndex(index)} aria-label={`${index + 1}번 이미지 보기`} aria-pressed={index === galleryIndex}><img src={image.url} alt={image.altText || `${product.name} 썸네일 ${index + 1}`} /></button>)}</div></section>
-          <aside className="purchase-panel"><span className="eyebrow red">{product.category}</span><h1>{product.name}</h1><p className="product-sku">SKU {product.sku}</p><div className="panel-badges"><FitmentBadge status={product.fitment} /><StockBadge stock={product.stock} /></div><div className="detail-price"><strong>{formatPrice(product.price)}</strong><span>원</span><small>장착비 별도 · 상담 후 안내</small></div>
+          <aside className="purchase-panel"><span className="eyebrow red">{product.category}</span><h1>{product.name}</h1><p className="product-sku">SKU {product.sku}</p><div className="panel-badges"><FitmentBadge status={product.fitment} /><StockBadge stock={product.stock} /></div><div className="detail-price"><strong>{formatPrice(selectedPrice)}</strong><span>원</span><small>{selectedAdditionalPrice > 0 ? `선택 옵션 +${formatPrice(selectedAdditionalPrice)}원 포함` : "장착비 별도 · 상담 후 안내"}</small></div>
             <div className={`fitment-panel ${fitment.className}`}><div><FitIcon /><strong>{fitment.label}</strong></div><p>{fitment.description}</p><span>{product.isUniversalFitment ? "전 차종 적용 · 장착 전 규격 확인 필요" : product.compatibleVehicles.length ? product.compatibleVehicles.map((vehicle) => vehicle.replaceAll("|", " ")).join(" · ") : "등록된 적용 차량이 없습니다."}</span><button>판단 근거 보기 <ChevronRight /></button></div>
             <div className={`stock-panel ${stock.className}`}><StockIcon /><div><strong>{stock.label}</strong><p>{stock.copy}</p></div></div>
-            <div className="option-block"><div><strong>팁 옵션</strong><span>필수</span></div><div className="option-chips">{["Carbon Quad", "Black Chrome"].map((item) => <button key={item} className={tip === item ? "selected" : ""} onClick={() => setTip(item)}>{item}{tip === item && <Check />}</button>)}</div></div>
+            {product.optionGroups.length > 0 && <div className="product-option-groups">{product.optionGroups.map((group) => <div className="option-block" key={group.name}><div><strong>{group.name}</strong><span>필수</span></div><div className="option-chips">{group.options.map((option) => { const selected = selectedOptions.some((selection) => selection.groupName === group.name && selection.optionName === option.name); return <button type="button" key={option.name} className={selected ? "selected" : ""} onClick={() => selectOption(group.name, option.name)}>{option.name}<small>{option.additionalPrice === 0 ? "0원" : `+${formatPrice(option.additionalPrice)}원`}</small>{selected && <Check />}</button>; })}</div></div>)}</div>}
             <div className="quantity-row"><strong>수량</strong><div><button onClick={() => setQuantity(Math.max(1, quantity - 1))}><Minus /></button><span>{quantity}</span><button onClick={() => setQuantity(quantity + 1)}><Plus /></button></div></div>
             <button className="button primary full large" onClick={handleCta}>{cta} <ArrowRight /></button><button className="button secondary full"><MessageCircle /> 장착 조건 상담</button><p className="purchase-note"><ShieldCheck /> 결제 직전 가격·재고·적합성을 다시 확인합니다.</p>
           </aside>
@@ -1108,9 +1166,9 @@ function ProductDetailPage({ product, addToCart, showToast }: { product: Product
       <nav className="detail-tabs"><div className="grid-container"><a href="#overview">제품 소개</a><a href="#sound">배기음</a><a href="#specs">기술 사양</a><a href="#fitment">장착 조건</a><a href="#policy">보증·반품</a></div></nav>
       <section id="overview" className="section detail-story"><div className="grid-container story-grid"><div><span className="eyebrow red">ENGINEERED DETAIL</span><h2>정확한 라인,<br />절제된 존재감</h2><p>{product.kicker}. 차량 하부 구조와 순정 장착 포인트를 고려한 제품 구성을 확인하세요.</p></div><div className="story-image"><img src={galleryImages[1]?.url ?? galleryImages[0].url} alt={galleryImages[1]?.altText || galleryImages[0].altText} /><span>{product.material.split(" · ")[0]}</span></div></div></section>
       <section id="sound" className="section detail-dark-block"><div className="grid-container"><SectionHeading eyebrow="SOUND SAMPLE" title={`${product.name} · Sound Sample`} copy="녹음 환경과 재생 기기에 따라 실제 소리는 다르게 들릴 수 있습니다." /><SoundPlayer /></div></section>
-      <section id="specs" className="section"><div className="grid-container spec-layout"><div><span className="eyebrow red">SPECIFICATIONS</span><h2>기술 사양</h2></div><dl className="spec-table"><div><dt>재질</dt><dd>{product.material.split(" · ")[0]}</dd></div><div><dt>시스템 구성</dt><dd>{product.category}</dd></div><div><dt>밸브</dt><dd>{product.category.includes("VALVED") ? "전자식 밸브 포함" : "해당 없음"}</dd></div><div><dt>팁 구성</dt><dd>{tip}</dd></div><div><dt>장착 시간</dt><dd>상담 후 안내</dd></div><div><dt>인증·구조변경</dt><dd>차량 사양과 지역 기준에 따라 별도 확인 필요</dd></div></dl></div></section>
+      <section id="specs" className="section"><div className="grid-container spec-layout"><div><span className="eyebrow red">SPECIFICATIONS</span><h2>기술 사양</h2></div><dl className="spec-table"><div><dt>재질</dt><dd>{product.material.split(" · ")[0]}</dd></div><div><dt>시스템 구성</dt><dd>{product.category}</dd></div><div><dt>밸브</dt><dd>{product.category.includes("VALVED") ? "전자식 밸브 포함" : "해당 없음"}</dd></div><div><dt>장착 시간</dt><dd>상담 후 안내</dd></div><div><dt>인증·구조변경</dt><dd>차량 사양과 지역 기준에 따라 별도 확인 필요</dd></div></dl></div></section>
       <section id="fitment" className="section detail-fitment-info"><div className="grid-container"><div className="notice-card"><CircleHelp /><div><h3>장착과 관련 규정은 차량별 확인이 필요합니다</h3><p>화면의 적합성은 등록된 제품·차량 데이터를 기준으로 하며 법적 적합성이나 성능 향상을 보장하지 않습니다.</p></div><a href="/support/inquiry">적합성 문의 <ArrowRight /></a></div></div></section>
-      <div className="product-mobile-action"><div><span>{formatPrice(product.price)}원</span><small>{fitment.label}</small></div><button className="button primary" onClick={handleCta}>{cta}</button></div>
+      <div className="product-mobile-action"><div><span>{formatPrice(selectedPrice)}원</span><small>{fitment.label}</small></div><button className="button primary" onClick={handleCta}>{cta}</button></div>
     </div>
   );
 }
@@ -1165,7 +1223,7 @@ function CheckoutPage({ items, ready, clearCart, showToast }: { items: CartItem[
           items: items.map((item) => ({
             productSku: item.sku,
             quantity: item.quantity,
-            optionName: item.optionName,
+            selectedOptions: item.selectedOptions,
             vehicleSnapshot: item.vehicleSnapshot,
           })),
         }),
@@ -1520,7 +1578,28 @@ function ProductVehicleFitmentEditor({ sectionNumber, vehicles, error, selectedG
   </section>;
 }
 
-function ProductCreateModule({ showToast }: { showToast: (message: string) => void }) {
+function ProductOptionEditor({ optionGroups, onChange, sectionNumber }: { optionGroups: ProductOptionGroup[]; onChange: (groups: ProductOptionGroup[]) => void; sectionNumber: string }) {
+  const updateGroup = (groupIndex: number, patch: Partial<ProductOptionGroup>) => onChange(optionGroups.map((group, index) => index === groupIndex ? { ...group, ...patch } : group));
+  const updateOption = (groupIndex: number, optionIndex: number, patch: Partial<ProductOptionValue>) => onChange(optionGroups.map((group, index) => index === groupIndex ? { ...group, options: group.options.map((option, currentOptionIndex) => currentOptionIndex === optionIndex ? { ...option, ...patch } : option) } : group));
+  const addGroup = () => onChange([...optionGroups, { name: `옵션 ${optionGroups.length + 1}`, options: [{ name: "", additionalPrice: 0 }] }]);
+  const addOption = (groupIndex: number) => onChange(optionGroups.map((group, index) => index === groupIndex ? { ...group, options: [...group.options, { name: "", additionalPrice: 0 }] } : group));
+  return <section className="admin-card product-editor-card product-option-editor">
+    <div className="product-editor-section-title"><span>{sectionNumber}</span><div><h2>주문 옵션</h2><p>고객이 주문 시 선택할 옵션과 선택지별 추가금을 설정합니다. 추가금은 0원으로도 등록할 수 있습니다.</p></div></div>
+    <div className="product-option-editor-summary"><span>옵션 그룹 {optionGroups.length}/10</span><small>그룹별 선택지 최대 10개</small></div>
+    {optionGroups.map((group, groupIndex) => <div className="admin-option-group" key={groupIndex}>
+      <div className="admin-option-group-head"><label><span>옵션 그룹명</span><input value={group.name} maxLength={100} onChange={(event) => updateGroup(groupIndex, { name: event.target.value })} placeholder="예: 팁 마감" /></label><button type="button" className="icon-danger-button" aria-label={`옵션 그룹 ${groupIndex + 1} 삭제`} onClick={() => onChange(optionGroups.filter((_, index) => index !== groupIndex))}><X /></button></div>
+      <div className="admin-option-values">{group.options.map((option, optionIndex) => <div className="admin-option-value" key={optionIndex}><input value={option.name} maxLength={120} onChange={(event) => updateOption(groupIndex, optionIndex, { name: event.target.value })} placeholder={`옵션 ${optionIndex + 1}`} /><label><span>추가금</span><div className="price-input"><input type="number" min="0" max="2000000000" step="1000" value={option.additionalPrice} onChange={(event) => updateOption(groupIndex, optionIndex, { additionalPrice: Math.max(0, Math.trunc(Number(event.target.value) || 0)) })} /><small>원</small></div></label><button type="button" className="icon-danger-button" disabled={group.options.length === 1} aria-label={`옵션 ${optionIndex + 1} 삭제`} onClick={() => updateGroup(groupIndex, { options: group.options.filter((_, index) => index !== optionIndex) })}><X /></button></div>)}</div>
+      <button type="button" className="add-spec" disabled={group.options.length >= 10} onClick={() => addOption(groupIndex)}><Plus />선택지 추가</button>
+    </div>)}
+    <button type="button" className="add-option-group" disabled={optionGroups.length >= 10} onClick={addGroup}><Plus />옵션 그룹 추가</button>
+  </section>;
+}
+
+function ProductCreateModule({
+  showToast,
+}: {
+  showToast: (message: string) => void;
+}) {
   const [form, setForm] = useState({
     sku: "",
     slug: "",
@@ -1535,9 +1614,17 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
     description: "",
     imageAltText: "",
   });
-  const [specifications, setSpecifications] = useState([{ label: "재질", value: "SUS304" }, { label: "시스템 구성", value: "" }]);
-  const [selectedImages, setSelectedImages] = useState<Array<{ file: File; url: string }>>([]);
-  const [vehicleGenerationIds, setVehicleGenerationIds] = useState<string[]>([]);
+  const [specifications, setSpecifications] = useState([
+    { label: "재질", value: "SUS304" },
+    { label: "시스템 구성", value: "" },
+  ]);
+  const [optionGroups, setOptionGroups] = useState<ProductOptionGroup[]>([]);
+  const [selectedImages, setSelectedImages] = useState<
+    Array<{ file: File; url: string }>
+  >([]);
+  const [vehicleGenerationIds, setVehicleGenerationIds] = useState<string[]>(
+    [],
+  );
   const [isUniversalFitment, setIsUniversalFitment] = useState(false);
   const [imageProcessing, setImageProcessing] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -1551,53 +1638,90 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
   };
   const updateSku = (value: string) => {
     const sku = value.toUpperCase().replace(/[^A-Z0-9._-]/g, "");
-    setForm((current) => ({ ...current, sku, slug: slugEdited.current ? current.slug : sku.toLowerCase().replace(/[._]+/g, "-") }));
+    setForm((current) => ({
+      ...current,
+      sku,
+      slug: slugEdited.current
+        ? current.slug
+        : sku.toLowerCase().replace(/[._]+/g, "-"),
+    }));
   };
   const chooseImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const incoming = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (incoming.length === 0) return;
-    if (selectedImages.length + incoming.length > 4) { setError("상품 이미지는 최대 4장까지 등록할 수 있습니다."); return; }
+    if (selectedImages.length + incoming.length > 4) {
+      setError("상품 이미지는 최대 4장까지 등록할 수 있습니다.");
+      return;
+    }
     setError("");
     setImageProcessing(true);
     try {
       const compressed = await Promise.all(incoming.map(compressProductImage));
-      const next = compressed.map((file) => ({ file, url: URL.createObjectURL(file) }));
-      if ([...selectedImages, ...next].reduce((sum, item) => sum + item.file.size, 0) > 4_000_000) {
+      const next = compressed.map((file) => ({
+        file,
+        url: URL.createObjectURL(file),
+      }));
+      if (
+        [...selectedImages, ...next].reduce(
+          (sum, item) => sum + item.file.size,
+          0,
+        ) > 4_000_000
+      ) {
         next.forEach((item) => URL.revokeObjectURL(item.url));
         throw new Error("전체 이미지 용량은 4MB 이하여야 합니다.");
       }
       setSelectedImages((current) => [...current, ...next]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "이미지를 처리하지 못했습니다.");
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "이미지를 처리하지 못했습니다.",
+      );
     } finally {
       setImageProcessing(false);
     }
   };
-  const removeImage = (index: number) => setSelectedImages((current) => current.filter((item, itemIndex) => {
-    if (itemIndex === index) URL.revokeObjectURL(item.url);
-    return itemIndex !== index;
-  }));
+  const removeImage = (index: number) =>
+    setSelectedImages((current) =>
+      current.filter((item, itemIndex) => {
+        if (itemIndex === index) URL.revokeObjectURL(item.url);
+        return itemIndex !== index;
+      }),
+    );
   const save = async () => {
     if (processing) return;
     if (imageProcessing) {
-      setError("이미지를 처리하는 중입니다. 미리보기가 표시된 뒤 다시 저장해 주세요.");
+      setError(
+        "이미지를 처리하는 중입니다. 미리보기가 표시된 뒤 다시 저장해 주세요.",
+      );
       return;
     }
     setError("");
-    const completeSpecs = specifications.filter((item) => item.label.trim() && item.value.trim());
+    const completeSpecs = specifications.filter(
+      (item) => item.label.trim() && item.value.trim(),
+    );
     const missing: string[] = [];
     if (form.sku.length < 3) missing.push("SKU(3자 이상)");
-    if (!/^[a-z0-9][a-z0-9-]+$/.test(form.slug)) missing.push("URL 슬러그(영문 소문자·숫자·하이픈)");
+    if (!/^[a-z0-9][a-z0-9-]+$/.test(form.slug))
+      missing.push("URL 슬러그(영문 소문자·숫자·하이픈)");
     if (form.name.trim().length < 3) missing.push("상품명(3자 이상)");
     if (!form.category.trim()) missing.push("카테고리");
     if (!form.material.trim()) missing.push("재질");
     const price = Number(form.price);
-    if (!form.price || !Number.isSafeInteger(price) || price < 0 || price > 2_000_000_000) missing.push("판매가");
+    if (
+      !form.price ||
+      !Number.isSafeInteger(price) ||
+      price < 0 ||
+      price > 2_000_000_000
+    )
+      missing.push("판매가");
     if (!form.summary.trim()) missing.push("한 줄 요약");
     if (!form.description.trim()) missing.push("상세 설명");
     if (completeSpecs.length === 0) missing.push("제품 사양");
-    if (!isUniversalFitment && vehicleGenerationIds.length === 0) missing.push("적용 차량(1대 이상 또는 전 차종 적용)");
+    if (!hasValidProductOptionGroups(optionGroups)) missing.push("주문 옵션");
+    if (!isUniversalFitment && vehicleGenerationIds.length === 0)
+      missing.push("적용 차량(1대 이상 또는 전 차종 적용)");
     if (selectedImages.length === 0) missing.push("상품 이미지");
     if (missing.length > 0) {
       setError(`다음 항목을 확인해 주세요: ${missing.join(", ")}`);
@@ -1608,12 +1732,19 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
       const body = new FormData();
       Object.entries(form).forEach(([key, value]) => body.append(key, value));
       body.append("specifications", JSON.stringify(completeSpecs));
+      body.append("optionGroups", JSON.stringify(optionGroups));
       body.append("vehicleGenerationIds", JSON.stringify(vehicleGenerationIds));
       body.append("isUniversalFitment", String(isUniversalFitment));
       selectedImages.forEach(({ file }) => body.append("images", file));
       const response = await fetch("/api/products", { method: "POST", body });
-      const data = (await response.json()) as { product?: StoredProduct; error?: string };
-      if (response.status === 401) { window.location.href = "/admin/login"; return; }
+      const data = (await response.json()) as {
+        product?: StoredProduct;
+        error?: string;
+      };
+      if (response.status === 401) {
+        window.location.href = "/admin/login";
+        return;
+      }
       if (!response.ok || !data.product) {
         setError(data.error ?? "상품을 저장하지 못했습니다.");
         setProcessing(false);
@@ -1626,18 +1757,400 @@ function ProductCreateModule({ showToast }: { showToast: (message: string) => vo
       setProcessing(false);
     }
   };
-  return <><AdminPageHeader eyebrow="NEW PRODUCT" title="상품 등록" copy="기본 정보부터 적용 차량, 이미지, 상세 설명과 제품 사양까지 한 번에 등록합니다." actions={<><a className="admin-button secondary" href="/admin/products"><X/>취소</a><button className="admin-button primary" disabled={processing} onClick={save}><Check/>{processing ? "저장 중…" : form.status === "PUBLISHED" ? "등록하고 공개" : "임시저장"}</button></>}/>{error && <div className="product-editor-error" role="alert"><AlertTriangle/>{error}</div>}<div className="product-editor-layout"><div className="product-editor-main"><section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>01</span><div><h2>기본 정보</h2><p>고객과 운영자가 상품을 식별하는 핵심 정보입니다.</p></div></div><div className="product-form-grid"><label><span>SKU <b>필수</b></span><input value={form.sku} onChange={(event) => updateSku(event.target.value)} placeholder="TB-BMW-G8X-VCE-001"/></label><label><span>URL 슬러그 <b>필수</b></span><input value={form.slug} onChange={(event) => update("slug", event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="bmw-g8x-valved-catback"/></label><label className="wide"><span>상품명 <b>필수</b></span><input value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="BMW G80/G82 Valved Cat-back Exhaust"/></label><label><span>카테고리</span><select value={form.category} onChange={(event) => update("category", event.target.value)}><option>VALVED CAT-BACK</option><option>AXLE-BACK</option><option>VALVED EXHAUST</option><option>EXHAUST TIP</option><option>ACCESSORY</option></select></label><label><span>재질</span><input value={form.material} onChange={(event) => update("material", event.target.value)} placeholder="SUS304 · Carbon Quad Tip"/></label><label><span>판매가 <b>필수</b></span><div className="price-input"><input type="number" min="0" step="1000" value={form.price} onChange={(event) => update("price", event.target.value)} placeholder="3200000"/><small>원</small></div></label><label><span>재고 유형</span><select value={form.stockType} onChange={(event) => update("stockType", event.target.value)}><option value="DOMESTIC">국내 재고</option><option value="OVERSEAS_ORDER">해외발주</option><option value="PREORDER">예약판매</option><option value="OUT_OF_STOCK">품절</option></select></label><label><span>적합성 상태</span><select value={form.fitmentStatus} onChange={(event) => update("fitmentStatus", event.target.value)}><option value="NO_DATA">데이터 없음</option><option value="VERIFIED">장착 확인</option><option value="CONDITIONAL">조건부 장착</option><option value="CONSULTATION_REQUIRED">상담 필요</option><option value="INCOMPATIBLE">장착 불가</option></select></label></div></section><section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>02</span><div><h2>상품 설명</h2><p>목록 요약과 상세 페이지에 표시할 내용을 작성합니다.</p></div></div><label className="product-textarea"><span>한 줄 요약 <b>필수</b></span><textarea value={form.summary} onChange={(event) => update("summary", event.target.value)} maxLength={500} placeholder="차량 하부 구조와 순정 장착 포인트를 고려한 밸브 배기 시스템"/><small>{form.summary.length}/500</small></label><label className="product-textarea detail"><span>상세 설명 <b>필수</b></span><textarea value={form.description} onChange={(event) => update("description", event.target.value)} maxLength={10000} placeholder="제품 특징, 구성품, 장착 조건, 고객이 확인해야 할 내용을 구체적으로 입력하세요."/><small>{form.description.length}/10,000</small></label></section><section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>03</span><div><h2>제품 사양</h2><p>상세 페이지의 기술 사양 표에 표시됩니다.</p></div></div><div className="spec-editor">{specifications.map((item, index)=><div className="spec-editor-row" key={index}><input value={item.label} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, label: event.target.value } : spec))} placeholder="항목 (예: 파이프 직경)"/><input value={item.value} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, value: event.target.value } : spec))} placeholder="값 (예: 76mm)"/><button aria-label={`사양 ${index + 1} 삭제`} onClick={() => setSpecifications((current) => current.filter((_, specIndex) => specIndex !== index))}><X/></button></div>)}<button className="add-spec" onClick={() => setSpecifications((current) => [...current, { label: "", value: "" }])}><Plus/>사양 항목 추가</button></div></section><ProductVehicleFitmentEditor sectionNumber="04" vehicles={vehicleMaster.vehicles} error={vehicleMaster.error} selectedGenerationIds={vehicleGenerationIds} onChange={setVehicleGenerationIds} isUniversalFitment={isUniversalFitment} onUniversalChange={(value) => { setIsUniversalFitment(value); if (value) setVehicleGenerationIds([]); }}/></div><aside className="product-editor-side"><section className="admin-card product-editor-card image-editor"><div className="product-editor-section-title"><span>05</span><div><h2>상품 이미지</h2><p>첫 번째 이미지가 대표 이미지입니다.</p></div></div><input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={chooseImages}/><button className="image-drop-button" onClick={() => fileInput.current?.click()}><ImagePlus/><strong>이미지 선택</strong><span>JPG, PNG, WebP · 최대 4장<br/>자동 리사이즈 후 저장</span></button>{selectedImages.length > 0 && <div className="image-preview-grid">{selectedImages.map((image, index)=><article key={image.url}><img src={image.url} alt={`상품 이미지 미리보기 ${index + 1}`}/>{index === 0 && <b>대표</b>}<button aria-label={`이미지 ${index + 1} 삭제`} onClick={() => removeImage(index)}><X/></button><small>{Math.ceil(image.file.size / 1024)}KB</small></article>)}</div>}<label className="image-alt-field"><span>이미지 대체 텍스트</span><input value={form.imageAltText} onChange={(event) => update("imageAltText", event.target.value)} placeholder={form.name || "상품 이미지 설명"}/></label></section><section className="admin-card product-editor-card publish-editor"><div className="product-editor-section-title"><span>06</span><div><h2>공개 설정</h2><p>저장 직후의 노출 상태입니다.</p></div></div><label className={form.status === "DRAFT" ? "selected" : ""}><input type="radio" checked={form.status === "DRAFT"} onChange={() => update("status", "DRAFT")}/><FileText/><div><strong>임시저장</strong><span>어드민에서만 확인</span></div>{form.status === "DRAFT" && <CheckCircle2/>}</label><label className={form.status === "PUBLISHED" ? "selected" : ""}><input type="radio" checked={form.status === "PUBLISHED"} onChange={() => update("status", "PUBLISHED")}/><CheckCircle2/><div><strong>즉시 공개</strong><span>저장 후 고객에게 이미지 공개</span></div>{form.status === "PUBLISHED" && <CheckCircle2/>}</label><div className="publish-note"><ShieldCheck/><span>상품 등록과 공개 상태는 감사 로그에 기록됩니다.</span></div></section></aside></div></>;
+  return (
+    <>
+      <AdminPageHeader
+        eyebrow="NEW PRODUCT"
+        title="상품 등록"
+        copy="기본 정보부터 적용 차량, 이미지, 상세 설명과 제품 사양까지 한 번에 등록합니다."
+        actions={
+          <>
+            <a className="admin-button secondary" href="/admin/products">
+              <X />
+              취소
+            </a>
+            <button
+              className="admin-button primary"
+              disabled={processing}
+              onClick={save}
+            >
+              <Check />
+              {processing
+                ? "저장 중…"
+                : form.status === "PUBLISHED"
+                  ? "등록하고 공개"
+                  : "임시저장"}
+            </button>
+          </>
+        }
+      />
+      {error && (
+        <div className="product-editor-error" role="alert">
+          <AlertTriangle />
+          {error}
+        </div>
+      )}
+      <div className="product-editor-layout">
+        <div className="product-editor-main">
+          <section className="admin-card product-editor-card">
+            <div className="product-editor-section-title">
+              <span>01</span>
+              <div>
+                <h2>기본 정보</h2>
+                <p>고객과 운영자가 상품을 식별하는 핵심 정보입니다.</p>
+              </div>
+            </div>
+            <div className="product-form-grid">
+              <label>
+                <span>
+                  SKU <b>필수</b>
+                </span>
+                <input
+                  value={form.sku}
+                  onChange={(event) => updateSku(event.target.value)}
+                  placeholder="TB-BMW-G8X-VCE-001"
+                />
+              </label>
+              <label>
+                <span>
+                  URL 슬러그 <b>필수</b>
+                </span>
+                <input
+                  value={form.slug}
+                  onChange={(event) =>
+                    update(
+                      "slug",
+                      event.target.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9-]/g, ""),
+                    )
+                  }
+                  placeholder="bmw-g8x-valved-catback"
+                />
+              </label>
+              <label className="wide">
+                <span>
+                  상품명 <b>필수</b>
+                </span>
+                <input
+                  value={form.name}
+                  onChange={(event) => update("name", event.target.value)}
+                  placeholder="BMW G80/G82 Valved Cat-back Exhaust"
+                />
+              </label>
+              <label>
+                <span>카테고리</span>
+                <select
+                  value={form.category}
+                  onChange={(event) => update("category", event.target.value)}
+                >
+                  <option>VALVED CAT-BACK</option>
+                  <option>AXLE-BACK</option>
+                  <option>VALVED EXHAUST</option>
+                  <option>EXHAUST TIP</option>
+                  <option>ACCESSORY</option>
+                </select>
+              </label>
+              <label>
+                <span>재질</span>
+                <input
+                  value={form.material}
+                  onChange={(event) => update("material", event.target.value)}
+                  placeholder="SUS304 · Carbon Quad Tip"
+                />
+              </label>
+              <label>
+                <span>
+                  판매가 <b>필수</b>
+                </span>
+                <div className="price-input">
+                  <input
+                    type="number"
+                    min="0"
+                    step="1000"
+                    value={form.price}
+                    onChange={(event) => update("price", event.target.value)}
+                    placeholder="3200000"
+                  />
+                  <small>원</small>
+                </div>
+              </label>
+              <label>
+                <span>재고 유형</span>
+                <select
+                  value={form.stockType}
+                  onChange={(event) => update("stockType", event.target.value)}
+                >
+                  <option value="DOMESTIC">국내 재고</option>
+                  <option value="OVERSEAS_ORDER">해외발주</option>
+                  <option value="PREORDER">예약판매</option>
+                  <option value="OUT_OF_STOCK">품절</option>
+                </select>
+              </label>
+              <label>
+                <span>적합성 상태</span>
+                <select
+                  value={form.fitmentStatus}
+                  onChange={(event) =>
+                    update("fitmentStatus", event.target.value)
+                  }
+                >
+                  <option value="NO_DATA">데이터 없음</option>
+                  <option value="VERIFIED">장착 확인</option>
+                  <option value="CONDITIONAL">조건부 장착</option>
+                  <option value="CONSULTATION_REQUIRED">상담 필요</option>
+                  <option value="INCOMPATIBLE">장착 불가</option>
+                </select>
+              </label>
+            </div>
+          </section>
+          <section className="admin-card product-editor-card">
+            <div className="product-editor-section-title">
+              <span>02</span>
+              <div>
+                <h2>상품 설명</h2>
+                <p>목록 요약과 상세 페이지에 표시할 내용을 작성합니다.</p>
+              </div>
+            </div>
+            <label className="product-textarea">
+              <span>
+                한 줄 요약 <b>필수</b>
+              </span>
+              <textarea
+                value={form.summary}
+                onChange={(event) => update("summary", event.target.value)}
+                maxLength={500}
+                placeholder="차량 하부 구조와 순정 장착 포인트를 고려한 밸브 배기 시스템"
+              />
+              <small>{form.summary.length}/500</small>
+            </label>
+            <label className="product-textarea detail">
+              <span>
+                상세 설명 <b>필수</b>
+              </span>
+              <textarea
+                value={form.description}
+                onChange={(event) => update("description", event.target.value)}
+                maxLength={10000}
+                placeholder="제품 특징, 구성품, 장착 조건, 고객이 확인해야 할 내용을 구체적으로 입력하세요."
+              />
+              <small>{form.description.length}/10,000</small>
+            </label>
+          </section>
+          <section className="admin-card product-editor-card">
+            <div className="product-editor-section-title">
+              <span>03</span>
+              <div>
+                <h2>제품 사양</h2>
+                <p>상세 페이지의 기술 사양 표에 표시됩니다.</p>
+              </div>
+            </div>
+            <div className="spec-editor">
+              {specifications.map((item, index) => (
+                <div className="spec-editor-row" key={index}>
+                  <input
+                    value={item.label}
+                    onChange={(event) =>
+                      setSpecifications((current) =>
+                        current.map((spec, specIndex) =>
+                          specIndex === index
+                            ? { ...spec, label: event.target.value }
+                            : spec,
+                        ),
+                      )
+                    }
+                    placeholder="항목 (예: 파이프 직경)"
+                  />
+                  <input
+                    value={item.value}
+                    onChange={(event) =>
+                      setSpecifications((current) =>
+                        current.map((spec, specIndex) =>
+                          specIndex === index
+                            ? { ...spec, value: event.target.value }
+                            : spec,
+                        ),
+                      )
+                    }
+                    placeholder="값 (예: 76mm)"
+                  />
+                  <button
+                    aria-label={`사양 ${index + 1} 삭제`}
+                    onClick={() =>
+                      setSpecifications((current) =>
+                        current.filter((_, specIndex) => specIndex !== index),
+                      )
+                    }
+                  >
+                    <X />
+                  </button>
+                </div>
+              ))}
+              <button
+                className="add-spec"
+                onClick={() =>
+                  setSpecifications((current) => [
+                    ...current,
+                    { label: "", value: "" },
+                  ])
+                }
+              >
+                <Plus />
+                사양 항목 추가
+              </button>
+            </div>
+          </section>
+          <ProductOptionEditor optionGroups={optionGroups} onChange={setOptionGroups} sectionNumber="04" />
+          <ProductVehicleFitmentEditor
+            sectionNumber="05"
+            vehicles={vehicleMaster.vehicles}
+            error={vehicleMaster.error}
+            selectedGenerationIds={vehicleGenerationIds}
+            onChange={setVehicleGenerationIds}
+            isUniversalFitment={isUniversalFitment}
+            onUniversalChange={(value) => {
+              setIsUniversalFitment(value);
+              if (value) setVehicleGenerationIds([]);
+            }}
+          />
+        </div>
+        <aside className="product-editor-side">
+          <section className="admin-card product-editor-card image-editor">
+            <div className="product-editor-section-title">
+              <span>06</span>
+              <div>
+                <h2>상품 이미지</h2>
+                <p>첫 번째 이미지가 대표 이미지입니다.</p>
+              </div>
+            </div>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              multiple
+              hidden
+              onChange={chooseImages}
+            />
+            <button
+              className="image-drop-button"
+              onClick={() => fileInput.current?.click()}
+            >
+              <ImagePlus />
+              <strong>이미지 선택</strong>
+              <span>
+                JPG, PNG, WebP · 최대 4장
+                <br />
+                자동 리사이즈 후 저장
+              </span>
+            </button>
+            {selectedImages.length > 0 && (
+              <div className="image-preview-grid">
+                {selectedImages.map((image, index) => (
+                  <article key={image.url}>
+                    <img
+                      src={image.url}
+                      alt={`상품 이미지 미리보기 ${index + 1}`}
+                    />
+                    {index === 0 && <b>대표</b>}
+                    <button
+                      aria-label={`이미지 ${index + 1} 삭제`}
+                      onClick={() => removeImage(index)}
+                    >
+                      <X />
+                    </button>
+                    <small>{Math.ceil(image.file.size / 1024)}KB</small>
+                  </article>
+                ))}
+              </div>
+            )}
+            <label className="image-alt-field">
+              <span>이미지 대체 텍스트</span>
+              <input
+                value={form.imageAltText}
+                onChange={(event) => update("imageAltText", event.target.value)}
+                placeholder={form.name || "상품 이미지 설명"}
+              />
+            </label>
+          </section>
+          <section className="admin-card product-editor-card publish-editor">
+            <div className="product-editor-section-title">
+              <span>07</span>
+              <div>
+                <h2>공개 설정</h2>
+                <p>저장 직후의 노출 상태입니다.</p>
+              </div>
+            </div>
+            <label className={form.status === "DRAFT" ? "selected" : ""}>
+              <input
+                type="radio"
+                checked={form.status === "DRAFT"}
+                onChange={() => update("status", "DRAFT")}
+              />
+              <FileText />
+              <div>
+                <strong>임시저장</strong>
+                <span>어드민에서만 확인</span>
+              </div>
+              {form.status === "DRAFT" && <CheckCircle2 />}
+            </label>
+            <label className={form.status === "PUBLISHED" ? "selected" : ""}>
+              <input
+                type="radio"
+                checked={form.status === "PUBLISHED"}
+                onChange={() => update("status", "PUBLISHED")}
+              />
+              <CheckCircle2 />
+              <div>
+                <strong>즉시 공개</strong>
+                <span>저장 후 고객에게 이미지 공개</span>
+              </div>
+              {form.status === "PUBLISHED" && <CheckCircle2 />}
+            </label>
+            <div className="publish-note">
+              <ShieldCheck />
+              <span>상품 등록과 공개 상태는 감사 로그에 기록됩니다.</span>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </>
+  );
 }
 
-function ProductDetailAdminModule({ productId, showToast }: { productId: string; showToast: (message: string) => void }) {
+function ProductDetailAdminModule({
+  productId,
+  showToast,
+}: {
+  productId: string;
+  showToast: (message: string) => void;
+}) {
   const [form, setForm] = useState<null | {
-    sku: string; slug: string; name: string; category: string; material: string; price: string;
-    status: string; stockType: string; fitmentStatus: string; summary: string; description: string; imageAltText: string;
+    sku: string;
+    slug: string;
+    name: string;
+    category: string;
+    material: string;
+    price: string;
+    status: string;
+    stockType: string;
+    fitmentStatus: string;
+    summary: string;
+    description: string;
+    imageAltText: string;
   }>(null);
-  const [specifications, setSpecifications] = useState<Array<{ label: string; value: string }>>([]);
-  const [existingImages, setExistingImages] = useState<StoredProduct["images"]>([]);
-  const [selectedImages, setSelectedImages] = useState<Array<{ file: File; url: string }>>([]);
-  const [vehicleGenerationIds, setVehicleGenerationIds] = useState<string[]>([]);
+  const [specifications, setSpecifications] = useState<
+    Array<{ label: string; value: string }>
+  >([]);
+  const [optionGroups, setOptionGroups] = useState<ProductOptionGroup[]>([]);
+  const [existingImages, setExistingImages] = useState<StoredProduct["images"]>(
+    [],
+  );
+  const [selectedImages, setSelectedImages] = useState<
+    Array<{ file: File; url: string }>
+  >([]);
+  const [vehicleGenerationIds, setVehicleGenerationIds] = useState<string[]>(
+    [],
+  );
   const [isUniversalFitment, setIsUniversalFitment] = useState(false);
   const [createdAt, setCreatedAt] = useState("");
   const [updatedAt, setUpdatedAt] = useState("");
@@ -1649,64 +2162,123 @@ function ProductDetailAdminModule({ productId, showToast }: { productId: string;
 
   useEffect(() => {
     let active = true;
-    fetch(`/api/products/${encodeURIComponent(productId)}`, { cache: "no-store" })
+    fetch(`/api/products/${encodeURIComponent(productId)}`, {
+      cache: "no-store",
+    })
       .then(async (response) => {
-        const data = (await response.json()) as { product?: StoredProduct; error?: string };
-        if (response.status === 401) { window.location.href = "/admin/login"; return; }
-        if (!response.ok || !data.product) throw new Error(data.error ?? "상품 정보를 불러오지 못했습니다.");
+        const data = (await response.json()) as {
+          product?: StoredProduct;
+          error?: string;
+        };
+        if (response.status === 401) {
+          window.location.href = "/admin/login";
+          return;
+        }
+        if (!response.ok || !data.product)
+          throw new Error(data.error ?? "상품 정보를 불러오지 못했습니다.");
         if (!active) return;
         const product = data.product;
         setForm({
-          sku: product.sku, slug: product.slug, name: product.name, category: product.category,
-          material: product.material, price: String(product.price), status: product.status,
-          stockType: product.stockType, fitmentStatus: product.fitmentStatus, summary: product.summary,
-          description: product.description, imageAltText: product.images[0]?.altText ?? product.name,
+          sku: product.sku,
+          slug: product.slug,
+          name: product.name,
+          category: product.category,
+          material: product.material,
+          price: String(product.price),
+          status: product.status,
+          stockType: product.stockType,
+          fitmentStatus: product.fitmentStatus,
+          summary: product.summary,
+          description: product.description,
+          imageAltText: product.images[0]?.altText ?? product.name,
         });
-        setSpecifications(product.specifications.length ? product.specifications : [{ label: "", value: "" }]);
+        setSpecifications(
+          product.specifications.length
+            ? product.specifications
+            : [{ label: "", value: "" }],
+        );
+        setOptionGroups(product.optionGroups ?? []);
         setExistingImages(product.images);
-        setVehicleGenerationIds(product.vehicleFitments.map((fitment) => fitment.vehicleGenerationId));
+        setVehicleGenerationIds(
+          product.vehicleFitments.map((fitment) => fitment.vehicleGenerationId),
+        );
         setIsUniversalFitment(product.isUniversalFitment);
         setCreatedAt(product.createdAt);
         setUpdatedAt(product.updatedAt);
       })
-      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : "상품 정보를 불러오지 못했습니다."); });
-    return () => { active = false; };
+      .catch((reason: unknown) => {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "상품 정보를 불러오지 못했습니다.",
+          );
+      });
+    return () => {
+      active = false;
+    };
   }, [productId]);
 
-  const update = (key: NonNullable<typeof form> extends infer T ? keyof T : never, value: string) => {
-    setForm((current) => current ? { ...current, [key]: value } : current);
+  const update = (
+    key: NonNullable<typeof form> extends infer T ? keyof T : never,
+    value: string,
+  ) => {
+    setForm((current) => (current ? { ...current, [key]: value } : current));
   };
   const chooseImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const incoming = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (!incoming.length) return;
-    if (existingImages.length + selectedImages.length + incoming.length > 4) { setError("상품 이미지는 최대 4장까지 유지할 수 있습니다."); return; }
+    if (existingImages.length + selectedImages.length + incoming.length > 4) {
+      setError("상품 이미지는 최대 4장까지 유지할 수 있습니다.");
+      return;
+    }
     setError("");
     setImageProcessing(true);
     try {
       const compressed = await Promise.all(incoming.map(compressProductImage));
-      const next = compressed.map((file) => ({ file, url: URL.createObjectURL(file) }));
-      const totalBytes = existingImages.reduce((sum, image) => sum + image.byteSize, 0) + [...selectedImages, ...next].reduce((sum, image) => sum + image.file.size, 0);
+      const next = compressed.map((file) => ({
+        file,
+        url: URL.createObjectURL(file),
+      }));
+      const totalBytes =
+        existingImages.reduce((sum, image) => sum + image.byteSize, 0) +
+        [...selectedImages, ...next].reduce(
+          (sum, image) => sum + image.file.size,
+          0,
+        );
       if (totalBytes > 4_000_000) {
         next.forEach((image) => URL.revokeObjectURL(image.url));
         throw new Error("전체 이미지 용량은 4MB 이하여야 합니다.");
       }
       setSelectedImages((current) => [...current, ...next]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "이미지를 처리하지 못했습니다.");
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "이미지를 처리하지 못했습니다.",
+      );
     } finally {
       setImageProcessing(false);
     }
   };
-  const removeNewImage = (index: number) => setSelectedImages((current) => current.filter((image, imageIndex) => {
-    if (index === imageIndex) URL.revokeObjectURL(image.url);
-    return index !== imageIndex;
-  }));
+  const removeNewImage = (index: number) =>
+    setSelectedImages((current) =>
+      current.filter((image, imageIndex) => {
+        if (index === imageIndex) URL.revokeObjectURL(image.url);
+        return index !== imageIndex;
+      }),
+    );
   const save = async () => {
     if (!form || processing) return;
-    if (imageProcessing) { setError("이미지를 처리하는 중입니다."); return; }
+    if (imageProcessing) {
+      setError("이미지를 처리하는 중입니다.");
+      return;
+    }
     setError("");
-    const completeSpecs = specifications.filter((item) => item.label.trim() && item.value.trim());
+    const completeSpecs = specifications.filter(
+      (item) => item.label.trim() && item.value.trim(),
+    );
     const price = Number(form.price);
     const missing: string[] = [];
     if (form.sku.length < 3) missing.push("SKU");
@@ -1714,38 +2286,79 @@ function ProductDetailAdminModule({ productId, showToast }: { productId: string;
     if (form.name.trim().length < 3) missing.push("상품명");
     if (!form.category.trim()) missing.push("카테고리");
     if (!form.material.trim()) missing.push("재질");
-    if (!form.price || !Number.isSafeInteger(price) || price < 0 || price > 2_000_000_000) missing.push("판매가");
+    if (
+      !form.price ||
+      !Number.isSafeInteger(price) ||
+      price < 0 ||
+      price > 2_000_000_000
+    )
+      missing.push("판매가");
     if (!form.summary.trim()) missing.push("한 줄 요약");
     if (!form.description.trim()) missing.push("상세 설명");
     if (!completeSpecs.length) missing.push("제품 사양");
-    if (!isUniversalFitment && !vehicleGenerationIds.length) missing.push("적용 차량(1대 이상 또는 전 차종 적용)");
-    if (existingImages.length + selectedImages.length === 0) missing.push("상품 이미지");
-    if (missing.length) { setError(`다음 항목을 확인해 주세요: ${missing.join(", ")}`); return; }
+    if (!hasValidProductOptionGroups(optionGroups)) missing.push("주문 옵션");
+    if (!isUniversalFitment && !vehicleGenerationIds.length)
+      missing.push("적용 차량(1대 이상 또는 전 차종 적용)");
+    if (existingImages.length + selectedImages.length === 0)
+      missing.push("상품 이미지");
+    if (missing.length) {
+      setError(`다음 항목을 확인해 주세요: ${missing.join(", ")}`);
+      return;
+    }
     setProcessing(true);
     try {
       const body = new FormData();
       Object.entries(form).forEach(([key, value]) => body.append(key, value));
       body.append("specifications", JSON.stringify(completeSpecs));
-      body.append("retainedImageIds", JSON.stringify(existingImages.map((image) => image.id)));
+      body.append("optionGroups", JSON.stringify(optionGroups));
+      body.append(
+        "retainedImageIds",
+        JSON.stringify(existingImages.map((image) => image.id)),
+      );
       body.append("vehicleGenerationIds", JSON.stringify(vehicleGenerationIds));
       body.append("isUniversalFitment", String(isUniversalFitment));
       selectedImages.forEach(({ file }) => body.append("images", file));
-      const response = await fetch(`/api/products/${encodeURIComponent(productId)}`, { method: "PATCH", body });
-      const data = (await response.json()) as { product?: StoredProduct; error?: string };
-      if (response.status === 401) { window.location.href = "/admin/login"; return; }
-      if (!response.ok || !data.product) { setError(data.error ?? "상품을 수정하지 못했습니다."); return; }
+      const response = await fetch(
+        `/api/products/${encodeURIComponent(productId)}`,
+        { method: "PATCH", body },
+      );
+      const data = (await response.json()) as {
+        product?: StoredProduct;
+        error?: string;
+      };
+      if (response.status === 401) {
+        window.location.href = "/admin/login";
+        return;
+      }
+      if (!response.ok || !data.product) {
+        setError(data.error ?? "상품을 수정하지 못했습니다.");
+        return;
+      }
       selectedImages.forEach((image) => URL.revokeObjectURL(image.url));
       setSelectedImages([]);
       setExistingImages(data.product.images);
       setSpecifications(data.product.specifications);
-      setVehicleGenerationIds(data.product.vehicleFitments.map((fitment) => fitment.vehicleGenerationId));
+      setOptionGroups(data.product.optionGroups ?? []);
+      setVehicleGenerationIds(
+        data.product.vehicleFitments.map(
+          (fitment) => fitment.vehicleGenerationId,
+        ),
+      );
       setIsUniversalFitment(data.product.isUniversalFitment);
       setUpdatedAt(data.product.updatedAt);
       setForm({
-        sku: data.product.sku, slug: data.product.slug, name: data.product.name, category: data.product.category,
-        material: data.product.material, price: String(data.product.price), status: data.product.status,
-        stockType: data.product.stockType, fitmentStatus: data.product.fitmentStatus, summary: data.product.summary,
-        description: data.product.description, imageAltText: data.product.images[0]?.altText ?? data.product.name,
+        sku: data.product.sku,
+        slug: data.product.slug,
+        name: data.product.name,
+        category: data.product.category,
+        material: data.product.material,
+        price: String(data.product.price),
+        status: data.product.status,
+        stockType: data.product.stockType,
+        fitmentStatus: data.product.fitmentStatus,
+        summary: data.product.summary,
+        description: data.product.description,
+        imageAltText: data.product.images[0]?.altText ?? data.product.name,
       });
       showToast(`${data.product.name} 상품 정보를 수정했습니다.`);
     } catch {
@@ -1755,31 +2368,427 @@ function ProductDetailAdminModule({ productId, showToast }: { productId: string;
     }
   };
 
-  if (!form) return <div className="admin-editor-loading" role="status">{error ? <><AlertTriangle/><span>{error}</span><a className="admin-button secondary" href="/admin/products">상품 목록</a></> : <><RotateCcw/><span>상품 상세 정보를 불러오는 중입니다…</span></>}</div>;
-  const formatAdminDate = (value: string) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul" }).format(new Date(value));
-  return <>
-    <AdminPageHeader eyebrow="PRODUCT DETAIL" title="상품 상세·수정" copy="등록된 정보와 이미지, 공개 상태를 확인하고 수정합니다." actions={<><a className="admin-button secondary" href="/admin/products"><ArrowLeft/>목록</a>{form.status === "PUBLISHED" && <a className="admin-button secondary" href={`/products/${form.slug}`}><Search/>스토어 보기</a>}<button className="admin-button primary" disabled={processing} onClick={save}><Check/>{processing ? "저장 중…" : form.status === "PUBLISHED" ? "수정하고 공개" : "수정사항 임시저장"}</button></>}/>
-    <div className={`product-editor-context ${form.status === "PUBLISHED" ? "published" : "draft"}`}><div><span>현재 상태</span><strong>{form.status === "PUBLISHED" ? "스토어 공개" : "임시저장"}</strong></div><p>{form.status === "PUBLISHED" ? "고객 상품 목록과 상세 페이지에 노출 중입니다." : "즉시 공개를 선택하고 저장하면 스토어에 노출됩니다."}</p><small>등록 {formatAdminDate(createdAt)} · 최근 수정 {formatAdminDate(updatedAt)}</small></div>
-    {error && <div className="product-editor-error" role="alert"><AlertTriangle/>{error}</div>}
-    <div className="product-editor-layout"><div className="product-editor-main">
-      <section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>01</span><div><h2>기본 정보</h2><p>SKU, 주소, 가격과 판매 조건을 수정합니다.</p></div></div><div className="product-form-grid">
-        <label><span>SKU <b>필수</b></span><input value={form.sku} onChange={(event) => update("sku", event.target.value.toUpperCase().replace(/[^A-Z0-9._-]/g, ""))}/></label>
-        <label><span>URL 슬러그 <b>필수</b></span><input value={form.slug} onChange={(event) => update("slug", event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}/></label>
-        <label className="wide"><span>상품명 <b>필수</b></span><input value={form.name} onChange={(event) => update("name", event.target.value)}/></label>
-        <label><span>카테고리</span><select value={form.category} onChange={(event) => update("category", event.target.value)}><option>VALVED CAT-BACK</option><option>AXLE-BACK</option><option>VALVED EXHAUST</option><option>EXHAUST TIP</option><option>ACCESSORY</option></select></label>
-        <label><span>재질</span><input value={form.material} onChange={(event) => update("material", event.target.value)}/></label>
-        <label><span>판매가 <b>필수</b></span><div className="price-input"><input type="number" min="0" step="1000" value={form.price} onChange={(event) => update("price", event.target.value)}/><small>원</small></div></label>
-        <label><span>재고 유형</span><select value={form.stockType} onChange={(event) => update("stockType", event.target.value)}><option value="DOMESTIC">국내 재고</option><option value="OVERSEAS_ORDER">해외발주</option><option value="PREORDER">예약판매</option><option value="OUT_OF_STOCK">품절</option></select></label>
-        <label><span>적합성 상태</span><select value={form.fitmentStatus} onChange={(event) => update("fitmentStatus", event.target.value)}><option value="NO_DATA">데이터 없음</option><option value="VERIFIED">장착 확인</option><option value="CONDITIONAL">조건부 장착</option><option value="CONSULTATION_REQUIRED">상담 필요</option><option value="INCOMPATIBLE">장착 불가</option></select></label>
-      </div></section>
-      <section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>02</span><div><h2>상품 설명</h2><p>목록 요약과 상세 페이지에 표시됩니다.</p></div></div><label className="product-textarea"><span>한 줄 요약 <b>필수</b></span><textarea value={form.summary} onChange={(event) => update("summary", event.target.value)} maxLength={500}/><small>{form.summary.length}/500</small></label><label className="product-textarea detail"><span>상세 설명 <b>필수</b></span><textarea value={form.description} onChange={(event) => update("description", event.target.value)} maxLength={10000}/><small>{form.description.length}/10,000</small></label></section>
-      <section className="admin-card product-editor-card"><div className="product-editor-section-title"><span>03</span><div><h2>제품 사양</h2><p>항목과 값을 수정하거나 추가합니다.</p></div></div><div className="spec-editor">{specifications.map((item, index) => <div className="spec-editor-row" key={index}><input value={item.label} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, label: event.target.value } : spec))}/><input value={item.value} onChange={(event) => setSpecifications((current) => current.map((spec, specIndex) => specIndex === index ? { ...spec, value: event.target.value } : spec))}/><button aria-label={`사양 ${index + 1} 삭제`} onClick={() => setSpecifications((current) => current.filter((_, specIndex) => specIndex !== index))}><X/></button></div>)}<button className="add-spec" onClick={() => setSpecifications((current) => [...current, { label: "", value: "" }])}><Plus/>사양 항목 추가</button></div></section>
-      <ProductVehicleFitmentEditor sectionNumber="04" vehicles={vehicleMaster.vehicles} error={vehicleMaster.error} selectedGenerationIds={vehicleGenerationIds} onChange={setVehicleGenerationIds} isUniversalFitment={isUniversalFitment} onUniversalChange={(value) => { setIsUniversalFitment(value); if (value) setVehicleGenerationIds([]); }}/>
-    </div><aside className="product-editor-side">
-      <section className="admin-card product-editor-card image-editor"><div className="product-editor-section-title"><span>05</span><div><h2>상품 이미지</h2><p>기존 이미지를 유지·삭제하거나 새로 추가합니다.</p></div></div><input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={chooseImages}/><button className="image-drop-button" disabled={imageProcessing} onClick={() => fileInput.current?.click()}><ImagePlus/><strong>{imageProcessing ? "이미지 처리 중…" : "새 이미지 추가"}</strong><span>현재 {existingImages.length + selectedImages.length}/4장</span></button><div className="image-preview-grid">{existingImages.map((image, index) => <article key={image.id}><img src={image.url} alt={image.altText}/>{index === 0 && <b>대표</b>}<button aria-label={`기존 이미지 ${index + 1} 삭제`} onClick={() => setExistingImages((current) => current.filter((item) => item.id !== image.id))}><X/></button><small>저장됨</small></article>)}{selectedImages.map((image, index) => <article key={image.url}><img src={image.url} alt={`새 상품 이미지 ${index + 1}`}/>{existingImages.length + index === 0 && <b>대표</b>}<button aria-label={`새 이미지 ${index + 1} 삭제`} onClick={() => removeNewImage(index)}><X/></button><small>신규</small></article>)}</div><label className="image-alt-field"><span>이미지 대체 텍스트</span><input value={form.imageAltText} onChange={(event) => update("imageAltText", event.target.value)}/></label></section>
-      <section className="admin-card product-editor-card publish-editor"><div className="product-editor-section-title"><span>06</span><div><h2>공개 설정</h2><p>저장 후 스토어 노출 여부입니다.</p></div></div><label className={form.status === "DRAFT" ? "selected" : ""}><input type="radio" checked={form.status === "DRAFT"} onChange={() => update("status", "DRAFT")}/><FileText/><div><strong>임시저장</strong><span>어드민에서만 확인</span></div>{form.status === "DRAFT" && <CheckCircle2/>}</label><label className={form.status === "PUBLISHED" ? "selected" : ""}><input type="radio" checked={form.status === "PUBLISHED"} onChange={() => update("status", "PUBLISHED")}/><CheckCircle2/><div><strong>즉시 공개</strong><span>저장 후 고객에게 공개</span></div>{form.status === "PUBLISHED" && <CheckCircle2/>}</label><div className="publish-note"><ShieldCheck/><span>정보 수정과 상태 변경은 감사 로그에 기록됩니다.</span></div></section>
-    </aside></div>
-  </>;
+  if (!form)
+    return (
+      <div className="admin-editor-loading" role="status">
+        {error ? (
+          <>
+            <AlertTriangle />
+            <span>{error}</span>
+            <a className="admin-button secondary" href="/admin/products">
+              상품 목록
+            </a>
+          </>
+        ) : (
+          <>
+            <RotateCcw />
+            <span>상품 상세 정보를 불러오는 중입니다…</span>
+          </>
+        )}
+      </div>
+    );
+  const formatAdminDate = (value: string) =>
+    new Intl.DateTimeFormat("ko-KR", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Asia/Seoul",
+    }).format(new Date(value));
+  return (
+    <>
+      <AdminPageHeader
+        eyebrow="PRODUCT DETAIL"
+        title="상품 상세·수정"
+        copy="등록된 정보와 이미지, 공개 상태를 확인하고 수정합니다."
+        actions={
+          <>
+            <a className="admin-button secondary" href="/admin/products">
+              <ArrowLeft />
+              목록
+            </a>
+            {form.status === "PUBLISHED" && (
+              <a
+                className="admin-button secondary"
+                href={`/products/${form.slug}`}
+              >
+                <Search />
+                스토어 보기
+              </a>
+            )}
+            <button
+              className="admin-button primary"
+              disabled={processing}
+              onClick={save}
+            >
+              <Check />
+              {processing
+                ? "저장 중…"
+                : form.status === "PUBLISHED"
+                  ? "수정하고 공개"
+                  : "수정사항 임시저장"}
+            </button>
+          </>
+        }
+      />
+      <div
+        className={`product-editor-context ${form.status === "PUBLISHED" ? "published" : "draft"}`}
+      >
+        <div>
+          <span>현재 상태</span>
+          <strong>
+            {form.status === "PUBLISHED" ? "스토어 공개" : "임시저장"}
+          </strong>
+        </div>
+        <p>
+          {form.status === "PUBLISHED"
+            ? "고객 상품 목록과 상세 페이지에 노출 중입니다."
+            : "즉시 공개를 선택하고 저장하면 스토어에 노출됩니다."}
+        </p>
+        <small>
+          등록 {formatAdminDate(createdAt)} · 최근 수정{" "}
+          {formatAdminDate(updatedAt)}
+        </small>
+      </div>
+      {error && (
+        <div className="product-editor-error" role="alert">
+          <AlertTriangle />
+          {error}
+        </div>
+      )}
+      <div className="product-editor-layout">
+        <div className="product-editor-main">
+          <section className="admin-card product-editor-card">
+            <div className="product-editor-section-title">
+              <span>01</span>
+              <div>
+                <h2>기본 정보</h2>
+                <p>SKU, 주소, 가격과 판매 조건을 수정합니다.</p>
+              </div>
+            </div>
+            <div className="product-form-grid">
+              <label>
+                <span>
+                  SKU <b>필수</b>
+                </span>
+                <input
+                  value={form.sku}
+                  onChange={(event) =>
+                    update(
+                      "sku",
+                      event.target.value
+                        .toUpperCase()
+                        .replace(/[^A-Z0-9._-]/g, ""),
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>
+                  URL 슬러그 <b>필수</b>
+                </span>
+                <input
+                  value={form.slug}
+                  onChange={(event) =>
+                    update(
+                      "slug",
+                      event.target.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9-]/g, ""),
+                    )
+                  }
+                />
+              </label>
+              <label className="wide">
+                <span>
+                  상품명 <b>필수</b>
+                </span>
+                <input
+                  value={form.name}
+                  onChange={(event) => update("name", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>카테고리</span>
+                <select
+                  value={form.category}
+                  onChange={(event) => update("category", event.target.value)}
+                >
+                  <option>VALVED CAT-BACK</option>
+                  <option>AXLE-BACK</option>
+                  <option>VALVED EXHAUST</option>
+                  <option>EXHAUST TIP</option>
+                  <option>ACCESSORY</option>
+                </select>
+              </label>
+              <label>
+                <span>재질</span>
+                <input
+                  value={form.material}
+                  onChange={(event) => update("material", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>
+                  판매가 <b>필수</b>
+                </span>
+                <div className="price-input">
+                  <input
+                    type="number"
+                    min="0"
+                    step="1000"
+                    value={form.price}
+                    onChange={(event) => update("price", event.target.value)}
+                  />
+                  <small>원</small>
+                </div>
+              </label>
+              <label>
+                <span>재고 유형</span>
+                <select
+                  value={form.stockType}
+                  onChange={(event) => update("stockType", event.target.value)}
+                >
+                  <option value="DOMESTIC">국내 재고</option>
+                  <option value="OVERSEAS_ORDER">해외발주</option>
+                  <option value="PREORDER">예약판매</option>
+                  <option value="OUT_OF_STOCK">품절</option>
+                </select>
+              </label>
+              <label>
+                <span>적합성 상태</span>
+                <select
+                  value={form.fitmentStatus}
+                  onChange={(event) =>
+                    update("fitmentStatus", event.target.value)
+                  }
+                >
+                  <option value="NO_DATA">데이터 없음</option>
+                  <option value="VERIFIED">장착 확인</option>
+                  <option value="CONDITIONAL">조건부 장착</option>
+                  <option value="CONSULTATION_REQUIRED">상담 필요</option>
+                  <option value="INCOMPATIBLE">장착 불가</option>
+                </select>
+              </label>
+            </div>
+          </section>
+          <section className="admin-card product-editor-card">
+            <div className="product-editor-section-title">
+              <span>02</span>
+              <div>
+                <h2>상품 설명</h2>
+                <p>목록 요약과 상세 페이지에 표시됩니다.</p>
+              </div>
+            </div>
+            <label className="product-textarea">
+              <span>
+                한 줄 요약 <b>필수</b>
+              </span>
+              <textarea
+                value={form.summary}
+                onChange={(event) => update("summary", event.target.value)}
+                maxLength={500}
+              />
+              <small>{form.summary.length}/500</small>
+            </label>
+            <label className="product-textarea detail">
+              <span>
+                상세 설명 <b>필수</b>
+              </span>
+              <textarea
+                value={form.description}
+                onChange={(event) => update("description", event.target.value)}
+                maxLength={10000}
+              />
+              <small>{form.description.length}/10,000</small>
+            </label>
+          </section>
+          <section className="admin-card product-editor-card">
+            <div className="product-editor-section-title">
+              <span>03</span>
+              <div>
+                <h2>제품 사양</h2>
+                <p>항목과 값을 수정하거나 추가합니다.</p>
+              </div>
+            </div>
+            <div className="spec-editor">
+              {specifications.map((item, index) => (
+                <div className="spec-editor-row" key={index}>
+                  <input
+                    value={item.label}
+                    onChange={(event) =>
+                      setSpecifications((current) =>
+                        current.map((spec, specIndex) =>
+                          specIndex === index
+                            ? { ...spec, label: event.target.value }
+                            : spec,
+                        ),
+                      )
+                    }
+                  />
+                  <input
+                    value={item.value}
+                    onChange={(event) =>
+                      setSpecifications((current) =>
+                        current.map((spec, specIndex) =>
+                          specIndex === index
+                            ? { ...spec, value: event.target.value }
+                            : spec,
+                        ),
+                      )
+                    }
+                  />
+                  <button
+                    aria-label={`사양 ${index + 1} 삭제`}
+                    onClick={() =>
+                      setSpecifications((current) =>
+                        current.filter((_, specIndex) => specIndex !== index),
+                      )
+                    }
+                  >
+                    <X />
+                  </button>
+                </div>
+              ))}
+              <button
+                className="add-spec"
+                onClick={() =>
+                  setSpecifications((current) => [
+                    ...current,
+                    { label: "", value: "" },
+                  ])
+                }
+              >
+                <Plus />
+                사양 항목 추가
+              </button>
+            </div>
+          </section>
+          <ProductOptionEditor optionGroups={optionGroups} onChange={setOptionGroups} sectionNumber="04" />
+          <ProductVehicleFitmentEditor
+            sectionNumber="05"
+            vehicles={vehicleMaster.vehicles}
+            error={vehicleMaster.error}
+            selectedGenerationIds={vehicleGenerationIds}
+            onChange={setVehicleGenerationIds}
+            isUniversalFitment={isUniversalFitment}
+            onUniversalChange={(value) => {
+              setIsUniversalFitment(value);
+              if (value) setVehicleGenerationIds([]);
+            }}
+          />
+        </div>
+        <aside className="product-editor-side">
+          <section className="admin-card product-editor-card image-editor">
+            <div className="product-editor-section-title">
+              <span>06</span>
+              <div>
+                <h2>상품 이미지</h2>
+                <p>기존 이미지를 유지·삭제하거나 새로 추가합니다.</p>
+              </div>
+            </div>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              multiple
+              hidden
+              onChange={chooseImages}
+            />
+            <button
+              className="image-drop-button"
+              disabled={imageProcessing}
+              onClick={() => fileInput.current?.click()}
+            >
+              <ImagePlus />
+              <strong>
+                {imageProcessing ? "이미지 처리 중…" : "새 이미지 추가"}
+              </strong>
+              <span>
+                현재 {existingImages.length + selectedImages.length}/4장
+              </span>
+            </button>
+            <div className="image-preview-grid">
+              {existingImages.map((image, index) => (
+                <article key={image.id}>
+                  <img src={image.url} alt={image.altText} />
+                  {index === 0 && <b>대표</b>}
+                  <button
+                    aria-label={`기존 이미지 ${index + 1} 삭제`}
+                    onClick={() =>
+                      setExistingImages((current) =>
+                        current.filter((item) => item.id !== image.id),
+                      )
+                    }
+                  >
+                    <X />
+                  </button>
+                  <small>저장됨</small>
+                </article>
+              ))}
+              {selectedImages.map((image, index) => (
+                <article key={image.url}>
+                  <img src={image.url} alt={`새 상품 이미지 ${index + 1}`} />
+                  {existingImages.length + index === 0 && <b>대표</b>}
+                  <button
+                    aria-label={`새 이미지 ${index + 1} 삭제`}
+                    onClick={() => removeNewImage(index)}
+                  >
+                    <X />
+                  </button>
+                  <small>신규</small>
+                </article>
+              ))}
+            </div>
+            <label className="image-alt-field">
+              <span>이미지 대체 텍스트</span>
+              <input
+                value={form.imageAltText}
+                onChange={(event) => update("imageAltText", event.target.value)}
+              />
+            </label>
+          </section>
+          <section className="admin-card product-editor-card publish-editor">
+            <div className="product-editor-section-title">
+              <span>07</span>
+              <div>
+                <h2>공개 설정</h2>
+                <p>저장 후 스토어 노출 여부입니다.</p>
+              </div>
+            </div>
+            <label className={form.status === "DRAFT" ? "selected" : ""}>
+              <input
+                type="radio"
+                checked={form.status === "DRAFT"}
+                onChange={() => update("status", "DRAFT")}
+              />
+              <FileText />
+              <div>
+                <strong>임시저장</strong>
+                <span>어드민에서만 확인</span>
+              </div>
+              {form.status === "DRAFT" && <CheckCircle2 />}
+            </label>
+            <label className={form.status === "PUBLISHED" ? "selected" : ""}>
+              <input
+                type="radio"
+                checked={form.status === "PUBLISHED"}
+                onChange={() => update("status", "PUBLISHED")}
+              />
+              <CheckCircle2 />
+              <div>
+                <strong>즉시 공개</strong>
+                <span>저장 후 고객에게 공개</span>
+              </div>
+              {form.status === "PUBLISHED" && <CheckCircle2 />}
+            </label>
+            <div className="publish-note">
+              <ShieldCheck />
+              <span>정보 수정과 상태 변경은 감사 로그에 기록됩니다.</span>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </>
+  );
 }
 
 type VehicleEntityType = "MAKE" | "MODEL" | "GENERATION";
@@ -1796,12 +2805,20 @@ type VehicleEditorState = {
   specifications: string;
 };
 
-function VehicleMasterModule({ showToast }: { showToast: (message: string) => void }) {
+function VehicleMasterModule({
+  showToast,
+}: {
+  showToast: (message: string) => void;
+}) {
   const [vehicles, setVehicles] = useState<StoredVehicleMake[] | null>(null);
   const [selectedMakeId, setSelectedMakeId] = useState("");
   const [selectedModelId, setSelectedModelId] = useState("");
   const [editor, setEditor] = useState<VehicleEditorState | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ type: VehicleEntityType; id: string; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    type: VehicleEntityType;
+    id: string;
+    name: string;
+  } | null>(null);
   const [processing, setProcessing] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [editorError, setEditorError] = useState("");
@@ -1811,32 +2828,84 @@ function VehicleMasterModule({ showToast }: { showToast: (message: string) => vo
     let active = true;
     fetch("/api/vehicles?scope=admin", { cache: "no-store" })
       .then(async (response) => {
-        const data = (await response.json()) as { vehicles?: StoredVehicleMake[]; error?: string };
-        if (response.status === 401) { window.location.href = "/admin/login"; return; }
-        if (!response.ok) throw new Error(data.error ?? "차량 정보를 불러오지 못했습니다.");
-        if (active) setVehicles(Array.isArray(data.vehicles) ? data.vehicles : []);
+        const data = (await response.json()) as {
+          vehicles?: StoredVehicleMake[];
+          error?: string;
+        };
+        if (response.status === 401) {
+          window.location.href = "/admin/login";
+          return;
+        }
+        if (!response.ok)
+          throw new Error(data.error ?? "차량 정보를 불러오지 못했습니다.");
+        if (active)
+          setVehicles(Array.isArray(data.vehicles) ? data.vehicles : []);
       })
       .catch((reason: unknown) => {
         if (!active) return;
-        setLoadError(reason instanceof Error ? reason.message : "차량 정보를 불러오지 못했습니다.");
+        setLoadError(
+          reason instanceof Error
+            ? reason.message
+            : "차량 정보를 불러오지 못했습니다.",
+        );
         setVehicles([]);
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [reloadKey]);
 
-  const selectedMake = vehicles?.find((make) => make.id === selectedMakeId) ?? vehicles?.[0] ?? null;
-  const selectedModel = selectedMake?.models.find((model) => model.id === selectedModelId) ?? selectedMake?.models[0] ?? null;
-  const modelCount = vehicles?.reduce((sum, make) => sum + make.models.length, 0) ?? 0;
-  const generationCount = vehicles?.reduce((sum, make) => sum + make.models.reduce((modelSum, model) => modelSum + model.generations.length, 0), 0) ?? 0;
-  const activeGenerationCount = vehicles?.reduce((sum, make) => sum + make.models.reduce((modelSum, model) => modelSum + model.generations.filter((generation) => make.isActive && model.isActive && generation.isActive).length, 0), 0) ?? 0;
-  const allModels = vehicles?.flatMap((make) => make.models.map((model) => ({ ...model, makeName: make.name }))) ?? [];
+  const selectedMake =
+    vehicles?.find((make) => make.id === selectedMakeId) ??
+    vehicles?.[0] ??
+    null;
+  const selectedModel =
+    selectedMake?.models.find((model) => model.id === selectedModelId) ??
+    selectedMake?.models[0] ??
+    null;
+  const modelCount =
+    vehicles?.reduce((sum, make) => sum + make.models.length, 0) ?? 0;
+  const generationCount =
+    vehicles?.reduce(
+      (sum, make) =>
+        sum +
+        make.models.reduce(
+          (modelSum, model) => modelSum + model.generations.length,
+          0,
+        ),
+      0,
+    ) ?? 0;
+  const activeGenerationCount =
+    vehicles?.reduce(
+      (sum, make) =>
+        sum +
+        make.models.reduce(
+          (modelSum, model) =>
+            modelSum +
+            model.generations.filter(
+              (generation) =>
+                make.isActive && model.isActive && generation.isActive,
+            ).length,
+          0,
+        ),
+      0,
+    ) ?? 0;
+  const allModels =
+    vehicles?.flatMap((make) =>
+      make.models.map((model) => ({ ...model, makeName: make.name })),
+    ) ?? [];
 
   const newEditor = (type: VehicleEntityType): VehicleEditorState => ({
     mode: "create",
     type,
     id: "",
     name: "",
-    parentId: type === "MODEL" ? selectedMake?.id ?? vehicles?.[0]?.id ?? "" : type === "GENERATION" ? selectedModel?.id ?? allModels[0]?.id ?? "" : "",
+    parentId:
+      type === "MODEL"
+        ? (selectedMake?.id ?? vehicles?.[0]?.id ?? "")
+        : type === "GENERATION"
+          ? (selectedModel?.id ?? allModels[0]?.id ?? "")
+          : "",
     sortOrder: "0",
     isActive: true,
     years: "",
@@ -1849,11 +2918,33 @@ function VehicleMasterModule({ showToast }: { showToast: (message: string) => vo
   };
   const openEditMake = (make: StoredVehicleMake) => {
     setEditorError("");
-    setEditor({ mode: "edit", type: "MAKE", id: make.id, name: make.name, parentId: "", sortOrder: String(make.sortOrder), isActive: make.isActive, years: "", engines: "", specifications: "" });
+    setEditor({
+      mode: "edit",
+      type: "MAKE",
+      id: make.id,
+      name: make.name,
+      parentId: "",
+      sortOrder: String(make.sortOrder),
+      isActive: make.isActive,
+      years: "",
+      engines: "",
+      specifications: "",
+    });
   };
   const openEditModel = (model: StoredVehicleModel) => {
     setEditorError("");
-    setEditor({ mode: "edit", type: "MODEL", id: model.id, name: model.name, parentId: model.makeId, sortOrder: String(model.sortOrder), isActive: model.isActive, years: "", engines: "", specifications: "" });
+    setEditor({
+      mode: "edit",
+      type: "MODEL",
+      id: model.id,
+      name: model.name,
+      parentId: model.makeId,
+      sortOrder: String(model.sortOrder),
+      isActive: model.isActive,
+      years: "",
+      engines: "",
+      specifications: "",
+    });
   };
   const openEditGeneration = (generation: StoredVehicleGeneration) => {
     setEditorError("");
@@ -1870,11 +2961,29 @@ function VehicleMasterModule({ showToast }: { showToast: (message: string) => vo
       specifications: generation.specifications.join("\n"),
     });
   };
-  const listValues = (value: string) => Array.from(new Set(value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean)));
+  const listValues = (value: string) =>
+    Array.from(
+      new Set(
+        value
+          .split(/[\n,]+/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    );
   const saveVehicle = async () => {
     if (!editor || processing) return;
-    if (!editor.name.trim()) { setEditorError("이름을 입력해 주세요."); return; }
-    if (editor.type !== "MAKE" && !editor.parentId) { setEditorError(editor.type === "MODEL" ? "제조사를 선택해 주세요." : "모델을 선택해 주세요."); return; }
+    if (!editor.name.trim()) {
+      setEditorError("이름을 입력해 주세요.");
+      return;
+    }
+    if (editor.type !== "MAKE" && !editor.parentId) {
+      setEditorError(
+        editor.type === "MODEL"
+          ? "제조사를 선택해 주세요."
+          : "모델을 선택해 주세요.",
+      );
+      return;
+    }
     setProcessing(true);
     setEditorError("");
     try {
@@ -1893,13 +3002,24 @@ function VehicleMasterModule({ showToast }: { showToast: (message: string) => vo
           specifications: listValues(editor.specifications),
         }),
       });
-      const data = (await response.json()) as { vehicle?: { id: string; name: string }; error?: string };
-      if (response.status === 401) { window.location.href = "/admin/login"; return; }
-      if (!response.ok || !data.vehicle) { setEditorError(data.error ?? "차량 정보를 저장하지 못했습니다."); return; }
+      const data = (await response.json()) as {
+        vehicle?: { id: string; name: string };
+        error?: string;
+      };
+      if (response.status === 401) {
+        window.location.href = "/admin/login";
+        return;
+      }
+      if (!response.ok || !data.vehicle) {
+        setEditorError(data.error ?? "차량 정보를 저장하지 못했습니다.");
+        return;
+      }
       setEditor(null);
       setVehicles(null);
       setReloadKey((value) => value + 1);
-      showToast(`${data.vehicle.name} ${editor.mode === "create" ? "항목을 추가" : "정보를 수정"}했습니다.`);
+      showToast(
+        `${data.vehicle.name} ${editor.mode === "create" ? "항목을 추가" : "정보를 수정"}했습니다.`,
+      );
     } catch {
       setEditorError("네트워크 연결을 확인한 뒤 다시 시도해 주세요.");
     } finally {
@@ -1913,11 +3033,20 @@ function VehicleMasterModule({ showToast }: { showToast: (message: string) => vo
       const response = await fetch("/api/vehicles", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ entityType: pendingDelete.type, id: pendingDelete.id }),
+        body: JSON.stringify({
+          entityType: pendingDelete.type,
+          id: pendingDelete.id,
+        }),
       });
       const data = (await response.json()) as { ok?: boolean; error?: string };
-      if (response.status === 401) { window.location.href = "/admin/login"; return; }
-      if (!response.ok || !data.ok) { showToast(data.error ?? "차량 정보를 삭제하지 못했습니다."); return; }
+      if (response.status === 401) {
+        window.location.href = "/admin/login";
+        return;
+      }
+      if (!response.ok || !data.ok) {
+        showToast(data.error ?? "차량 정보를 삭제하지 못했습니다.");
+        return;
+      }
       showToast(`${pendingDelete.name} 항목을 삭제했습니다.`);
       setPendingDelete(null);
       setVehicles(null);
@@ -1928,21 +3057,558 @@ function VehicleMasterModule({ showToast }: { showToast: (message: string) => vo
       setProcessing(false);
     }
   };
-  const changeEditorType = (type: VehicleEntityType) => setEditor(newEditor(type));
-  const typeLabel = editor?.type === "MAKE" ? "제조사" : editor?.type === "MODEL" ? "모델" : "세대 / 섀시";
+  const changeEditorType = (type: VehicleEntityType) =>
+    setEditor(newEditor(type));
+  const typeLabel =
+    editor?.type === "MAKE"
+      ? "제조사"
+      : editor?.type === "MODEL"
+        ? "모델"
+        : "세대 / 섀시";
 
-  return <>
-    <AdminPageHeader eyebrow="VEHICLE DATA" title="차량 마스터" copy="스토어 차량 찾기에 표시되는 제조사, 모델, 세대와 세부 정보를 관리합니다." actions={<><button className="admin-button secondary" onClick={() => { setVehicles(null); setLoadError(""); setReloadKey((value) => value + 1); }}><RotateCcw/>새로고침</button><button className="admin-button primary" onClick={() => openCreate("MAKE")}><Plus/>차량 추가</button></>}/>
-    <div className="vehicle-master-stats"><article><CarFront/><span>제조사<strong>{vehicles?.length ?? "–"}</strong></span></article><article><Database/><span>모델<strong>{vehicles ? modelCount : "–"}</strong></span></article><article><Gauge/><span>세대 / 섀시<strong>{vehicles ? generationCount : "–"}</strong></span></article><article><CheckCircle2/><span>사이트 노출 세대<strong>{vehicles ? activeGenerationCount : "–"}</strong></span></article></div>
-    {loadError && <div className="product-editor-error" role="alert"><AlertTriangle/>{loadError}<button onClick={() => { setVehicles(null); setLoadError(""); setReloadKey((value) => value + 1); }}>다시 시도</button></div>}
-    {vehicles === null ? <div className="admin-editor-loading" role="status"><RotateCcw/><span>차량 마스터를 불러오는 중입니다…</span></div> : <div className="vehicle-master-layout">
-      <section className="admin-card vehicle-master-column"><header><div><span>STEP 01</span><h2>제조사</h2></div><button aria-label="제조사 추가" onClick={() => openCreate("MAKE")}><Plus/></button></header><div className="vehicle-master-list">{vehicles.map((make) => <div className={`vehicle-master-row ${selectedMake?.id === make.id ? "selected" : ""}`} key={make.id}><button className="vehicle-master-select" onClick={() => { setSelectedMakeId(make.id); setSelectedModelId(""); }}><span><strong>{make.name}</strong><small>모델 {make.models.length}개</small></span><b className={make.isActive ? "active" : "inactive"}>{make.isActive ? "노출" : "숨김"}</b></button><button className="vehicle-master-edit" aria-label={`${make.name} 제조사 수정`} onClick={() => openEditMake(make)}><Settings/></button></div>)}{vehicles.length === 0 && <div className="vehicle-master-empty"><CarFront/><strong>등록된 제조사가 없습니다</strong><button onClick={() => openCreate("MAKE")}><Plus/>첫 제조사 추가</button></div>}</div></section>
-      <section className="admin-card vehicle-master-column"><header><div><span>STEP 02</span><h2>모델</h2><small>{selectedMake?.name ?? "제조사 선택 필요"}</small></div><button aria-label="모델 추가" disabled={!selectedMake} onClick={() => openCreate("MODEL")}><Plus/></button></header><div className="vehicle-master-list">{selectedMake?.models.map((model) => <div className={`vehicle-master-row ${selectedModel?.id === model.id ? "selected" : ""}`} key={model.id}><button className="vehicle-master-select" onClick={() => setSelectedModelId(model.id)}><span><strong>{model.name}</strong><small>세대 {model.generations.length}개</small></span><b className={model.isActive ? "active" : "inactive"}>{model.isActive ? "노출" : "숨김"}</b></button><button className="vehicle-master-edit" aria-label={`${model.name} 모델 수정`} onClick={() => openEditModel(model)}><Settings/></button></div>)}{selectedMake && selectedMake.models.length === 0 && <div className="vehicle-master-empty"><Box/><strong>등록된 모델이 없습니다</strong><button onClick={() => openCreate("MODEL")}><Plus/>모델 추가</button></div>}{!selectedMake && <div className="vehicle-master-empty"><ArrowLeft/><strong>제조사를 먼저 선택해 주세요</strong></div>}</div></section>
-      <section className="admin-card vehicle-master-column generations"><header><div><span>STEP 03</span><h2>세대 / 섀시</h2><small>{selectedMake?.name} {selectedModel?.name}</small></div><button aria-label="세대 추가" disabled={!selectedModel} onClick={() => openCreate("GENERATION")}><Plus/></button></header><div className="vehicle-generation-list">{selectedModel?.generations.map((generation) => <article className="vehicle-generation-row" key={generation.id}><div className="vehicle-generation-head"><span><strong>{generation.name}</strong><b className={generation.isActive ? "active" : "inactive"}>{generation.isActive ? "사이트 노출" : "숨김"}</b></span><div><button aria-label={`${generation.name} 세대 수정`} onClick={() => openEditGeneration(generation)}><Settings/></button><button aria-label={`${generation.name} 세대 삭제`} onClick={() => setPendingDelete({ type: "GENERATION", id: generation.id, name: generation.name })}><XCircle/></button></div></div><dl><div><dt>연식</dt><dd>{generation.years.join(", ") || "미입력"}</dd></div><div><dt>엔진</dt><dd>{generation.engines.join(", ") || "미입력"}</dd></div><div><dt>세부 사양</dt><dd>{generation.specifications.join(", ") || "미입력"}</dd></div></dl></article>)}{selectedModel && selectedModel.generations.length === 0 && <div className="vehicle-master-empty"><Gauge/><strong>등록된 세대가 없습니다</strong><button onClick={() => openCreate("GENERATION")}><Plus/>세대 추가</button></div>}{!selectedModel && <div className="vehicle-master-empty"><ArrowLeft/><strong>모델을 먼저 선택해 주세요</strong></div>}</div></section>
-    </div>}
-    {editor && <div className="dialog-backdrop" onMouseDown={() => !processing && setEditor(null)}><section className="vehicle-editor-dialog" role="dialog" aria-modal="true" aria-label={`차량 ${editor.mode === "create" ? "추가" : "수정"}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span>{editor.mode === "create" ? "ADD VEHICLE DATA" : "EDIT VEHICLE DATA"}</span><h2>{typeLabel} {editor.mode === "create" ? "추가" : "수정"}</h2></div><button aria-label="차량 편집 닫기" onClick={() => setEditor(null)}><X/></button></header><div className="vehicle-editor-body">{editor.mode === "create" && <label><span>등록 항목</span><select aria-label="등록 항목" value={editor.type} onChange={(event) => changeEditorType(event.target.value as VehicleEntityType)}><option value="MAKE">제조사</option><option value="MODEL">모델</option><option value="GENERATION">세대 / 섀시</option></select></label>}{editor.type === "MODEL" && <label><span>상위 제조사</span><select aria-label="상위 제조사" value={editor.parentId} onChange={(event) => setEditor({ ...editor, parentId: event.target.value })}><option value="">제조사 선택</option>{vehicles?.map((make) => <option key={make.id} value={make.id}>{make.name}</option>)}</select></label>}{editor.type === "GENERATION" && <label><span>상위 모델</span><select aria-label="상위 모델" value={editor.parentId} onChange={(event) => setEditor({ ...editor, parentId: event.target.value })}><option value="">모델 선택</option>{vehicles?.map((make) => <optgroup key={make.id} label={make.name}>{make.models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</optgroup>)}</select></label>}<label><span>{typeLabel} 이름 <b>필수</b></span><input aria-label={`${typeLabel} 이름`} autoFocus value={editor.name} onChange={(event) => setEditor({ ...editor, name: event.target.value })} placeholder={editor.type === "MAKE" ? "예: BMW" : editor.type === "MODEL" ? "예: M3" : "예: G80"}/></label><div className="vehicle-editor-split"><label><span>정렬 순서</span><input aria-label="정렬 순서" type="number" min="0" max="10000" value={editor.sortOrder} onChange={(event) => setEditor({ ...editor, sortOrder: event.target.value })}/></label><label className="vehicle-active-toggle"><span>사이트 표시</span><input aria-label="사이트 표시" type="checkbox" checked={editor.isActive} onChange={(event) => setEditor({ ...editor, isActive: event.target.checked })}/><strong>{editor.isActive ? "노출" : "숨김"}</strong></label></div>{editor.type === "GENERATION" && <div className="vehicle-generation-fields"><label><span>연식</span><textarea aria-label="연식" value={editor.years} onChange={(event) => setEditor({ ...editor, years: event.target.value })} placeholder={"2025\n2024\n2023"}/><small>쉼표 또는 줄바꿈으로 구분</small></label><label><span>엔진</span><textarea aria-label="엔진" value={editor.engines} onChange={(event) => setEditor({ ...editor, engines: event.target.value })} placeholder={"3.0 가솔린\n3.0 디젤"}/><small>쉼표 또는 줄바꿈으로 구분</small></label><label><span>세부 사양</span><textarea aria-label="세부 사양" value={editor.specifications} onChange={(event) => setEditor({ ...editor, specifications: event.target.value })} placeholder={"후륜 · 세단\n사륜 · 세단"}/><small>쉼표 또는 줄바꿈으로 구분</small></label></div>}{editorError && <div className="vehicle-editor-error" role="alert"><AlertTriangle/>{editorError}</div>}</div><footer>{editor.mode === "edit" && <button className="admin-button danger" onClick={() => { setPendingDelete({ type: editor.type, id: editor.id, name: editor.name }); setEditor(null); }}><XCircle/>삭제</button>}<span/><button className="admin-button secondary" disabled={processing} onClick={() => setEditor(null)}>취소</button><button className="admin-button primary" disabled={processing} onClick={saveVehicle}><Check/>{processing ? "저장 중…" : "저장"}</button></footer></section></div>}
-    {pendingDelete && <div className="dialog-backdrop" onMouseDown={() => !processing && setPendingDelete(null)}><section className="vehicle-delete-dialog" role="alertdialog" aria-modal="true" aria-label="차량 정보 삭제 확인" onMouseDown={(event) => event.stopPropagation()}><AlertTriangle/><h2>{pendingDelete.name} 항목을 삭제할까요?</h2><p>제조사를 삭제하면 하위 모델과 세대가, 모델을 삭제하면 하위 세대가 함께 삭제됩니다. 삭제 후 사이트 차량 선택 목록에서도 사라집니다.</p><div><button className="admin-button secondary" disabled={processing} onClick={() => setPendingDelete(null)}>취소</button><button className="admin-button danger" disabled={processing} onClick={deleteVehicle}><XCircle/>{processing ? "삭제 중…" : "삭제"}</button></div></section></div>}
-  </>;
+  return (
+    <>
+      <AdminPageHeader
+        eyebrow="VEHICLE DATA"
+        title="차량 마스터"
+        copy="스토어 차량 찾기에 표시되는 제조사, 모델, 세대와 세부 정보를 관리합니다."
+        actions={
+          <>
+            <button
+              className="admin-button secondary"
+              onClick={() => {
+                setVehicles(null);
+                setLoadError("");
+                setReloadKey((value) => value + 1);
+              }}
+            >
+              <RotateCcw />
+              새로고침
+            </button>
+            <button
+              className="admin-button primary"
+              onClick={() => openCreate("MAKE")}
+            >
+              <Plus />
+              차량 추가
+            </button>
+          </>
+        }
+      />
+      <div className="vehicle-master-stats">
+        <article>
+          <CarFront />
+          <span>
+            제조사<strong>{vehicles?.length ?? "–"}</strong>
+          </span>
+        </article>
+        <article>
+          <Database />
+          <span>
+            모델<strong>{vehicles ? modelCount : "–"}</strong>
+          </span>
+        </article>
+        <article>
+          <Gauge />
+          <span>
+            세대 / 섀시<strong>{vehicles ? generationCount : "–"}</strong>
+          </span>
+        </article>
+        <article>
+          <CheckCircle2 />
+          <span>
+            사이트 노출 세대
+            <strong>{vehicles ? activeGenerationCount : "–"}</strong>
+          </span>
+        </article>
+      </div>
+      {loadError && (
+        <div className="product-editor-error" role="alert">
+          <AlertTriangle />
+          {loadError}
+          <button
+            onClick={() => {
+              setVehicles(null);
+              setLoadError("");
+              setReloadKey((value) => value + 1);
+            }}
+          >
+            다시 시도
+          </button>
+        </div>
+      )}
+      {vehicles === null ? (
+        <div className="admin-editor-loading" role="status">
+          <RotateCcw />
+          <span>차량 마스터를 불러오는 중입니다…</span>
+        </div>
+      ) : (
+        <div className="vehicle-master-layout">
+          <section className="admin-card vehicle-master-column">
+            <header>
+              <div>
+                <span>STEP 01</span>
+                <h2>제조사</h2>
+              </div>
+              <button
+                aria-label="제조사 추가"
+                onClick={() => openCreate("MAKE")}
+              >
+                <Plus />
+              </button>
+            </header>
+            <div className="vehicle-master-list">
+              {vehicles.map((make) => (
+                <div
+                  className={`vehicle-master-row ${selectedMake?.id === make.id ? "selected" : ""}`}
+                  key={make.id}
+                >
+                  <button
+                    className="vehicle-master-select"
+                    onClick={() => {
+                      setSelectedMakeId(make.id);
+                      setSelectedModelId("");
+                    }}
+                  >
+                    <span>
+                      <strong>{make.name}</strong>
+                      <small>모델 {make.models.length}개</small>
+                    </span>
+                    <b className={make.isActive ? "active" : "inactive"}>
+                      {make.isActive ? "노출" : "숨김"}
+                    </b>
+                  </button>
+                  <button
+                    className="vehicle-master-edit"
+                    aria-label={`${make.name} 제조사 수정`}
+                    onClick={() => openEditMake(make)}
+                  >
+                    <Settings />
+                  </button>
+                </div>
+              ))}
+              {vehicles.length === 0 && (
+                <div className="vehicle-master-empty">
+                  <CarFront />
+                  <strong>등록된 제조사가 없습니다</strong>
+                  <button onClick={() => openCreate("MAKE")}>
+                    <Plus />첫 제조사 추가
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+          <section className="admin-card vehicle-master-column">
+            <header>
+              <div>
+                <span>STEP 02</span>
+                <h2>모델</h2>
+                <small>{selectedMake?.name ?? "제조사 선택 필요"}</small>
+              </div>
+              <button
+                aria-label="모델 추가"
+                disabled={!selectedMake}
+                onClick={() => openCreate("MODEL")}
+              >
+                <Plus />
+              </button>
+            </header>
+            <div className="vehicle-master-list">
+              {selectedMake?.models.map((model) => (
+                <div
+                  className={`vehicle-master-row ${selectedModel?.id === model.id ? "selected" : ""}`}
+                  key={model.id}
+                >
+                  <button
+                    className="vehicle-master-select"
+                    onClick={() => setSelectedModelId(model.id)}
+                  >
+                    <span>
+                      <strong>{model.name}</strong>
+                      <small>세대 {model.generations.length}개</small>
+                    </span>
+                    <b className={model.isActive ? "active" : "inactive"}>
+                      {model.isActive ? "노출" : "숨김"}
+                    </b>
+                  </button>
+                  <button
+                    className="vehicle-master-edit"
+                    aria-label={`${model.name} 모델 수정`}
+                    onClick={() => openEditModel(model)}
+                  >
+                    <Settings />
+                  </button>
+                </div>
+              ))}
+              {selectedMake && selectedMake.models.length === 0 && (
+                <div className="vehicle-master-empty">
+                  <Box />
+                  <strong>등록된 모델이 없습니다</strong>
+                  <button onClick={() => openCreate("MODEL")}>
+                    <Plus />
+                    모델 추가
+                  </button>
+                </div>
+              )}
+              {!selectedMake && (
+                <div className="vehicle-master-empty">
+                  <ArrowLeft />
+                  <strong>제조사를 먼저 선택해 주세요</strong>
+                </div>
+              )}
+            </div>
+          </section>
+          <section className="admin-card vehicle-master-column generations">
+            <header>
+              <div>
+                <span>STEP 03</span>
+                <h2>세대 / 섀시</h2>
+                <small>
+                  {selectedMake?.name} {selectedModel?.name}
+                </small>
+              </div>
+              <button
+                aria-label="세대 추가"
+                disabled={!selectedModel}
+                onClick={() => openCreate("GENERATION")}
+              >
+                <Plus />
+              </button>
+            </header>
+            <div className="vehicle-generation-list">
+              {selectedModel?.generations.map((generation) => (
+                <article className="vehicle-generation-row" key={generation.id}>
+                  <div className="vehicle-generation-head">
+                    <span>
+                      <strong>{generation.name}</strong>
+                      <b
+                        className={generation.isActive ? "active" : "inactive"}
+                      >
+                        {generation.isActive ? "사이트 노출" : "숨김"}
+                      </b>
+                    </span>
+                    <div>
+                      <button
+                        aria-label={`${generation.name} 세대 수정`}
+                        onClick={() => openEditGeneration(generation)}
+                      >
+                        <Settings />
+                      </button>
+                      <button
+                        aria-label={`${generation.name} 세대 삭제`}
+                        onClick={() =>
+                          setPendingDelete({
+                            type: "GENERATION",
+                            id: generation.id,
+                            name: generation.name,
+                          })
+                        }
+                      >
+                        <XCircle />
+                      </button>
+                    </div>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>연식</dt>
+                      <dd>{generation.years.join(", ") || "미입력"}</dd>
+                    </div>
+                    <div>
+                      <dt>엔진</dt>
+                      <dd>{generation.engines.join(", ") || "미입력"}</dd>
+                    </div>
+                    <div>
+                      <dt>세부 사양</dt>
+                      <dd>
+                        {generation.specifications.join(", ") || "미입력"}
+                      </dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+              {selectedModel && selectedModel.generations.length === 0 && (
+                <div className="vehicle-master-empty">
+                  <Gauge />
+                  <strong>등록된 세대가 없습니다</strong>
+                  <button onClick={() => openCreate("GENERATION")}>
+                    <Plus />
+                    세대 추가
+                  </button>
+                </div>
+              )}
+              {!selectedModel && (
+                <div className="vehicle-master-empty">
+                  <ArrowLeft />
+                  <strong>모델을 먼저 선택해 주세요</strong>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+      {editor && (
+        <div
+          className="dialog-backdrop"
+          onMouseDown={() => !processing && setEditor(null)}
+        >
+          <section
+            className="vehicle-editor-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`차량 ${editor.mode === "create" ? "추가" : "수정"}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>
+                  {editor.mode === "create"
+                    ? "ADD VEHICLE DATA"
+                    : "EDIT VEHICLE DATA"}
+                </span>
+                <h2>
+                  {typeLabel} {editor.mode === "create" ? "추가" : "수정"}
+                </h2>
+              </div>
+              <button
+                aria-label="차량 편집 닫기"
+                onClick={() => setEditor(null)}
+              >
+                <X />
+              </button>
+            </header>
+            <div className="vehicle-editor-body">
+              {editor.mode === "create" && (
+                <label>
+                  <span>등록 항목</span>
+                  <select
+                    aria-label="등록 항목"
+                    value={editor.type}
+                    onChange={(event) =>
+                      changeEditorType(event.target.value as VehicleEntityType)
+                    }
+                  >
+                    <option value="MAKE">제조사</option>
+                    <option value="MODEL">모델</option>
+                    <option value="GENERATION">세대 / 섀시</option>
+                  </select>
+                </label>
+              )}
+              {editor.type === "MODEL" && (
+                <label>
+                  <span>상위 제조사</span>
+                  <select
+                    aria-label="상위 제조사"
+                    value={editor.parentId}
+                    onChange={(event) =>
+                      setEditor({ ...editor, parentId: event.target.value })
+                    }
+                  >
+                    <option value="">제조사 선택</option>
+                    {vehicles?.map((make) => (
+                      <option key={make.id} value={make.id}>
+                        {make.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {editor.type === "GENERATION" && (
+                <label>
+                  <span>상위 모델</span>
+                  <select
+                    aria-label="상위 모델"
+                    value={editor.parentId}
+                    onChange={(event) =>
+                      setEditor({ ...editor, parentId: event.target.value })
+                    }
+                  >
+                    <option value="">모델 선택</option>
+                    {vehicles?.map((make) => (
+                      <optgroup key={make.id} label={make.name}>
+                        {make.models.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label>
+                <span>
+                  {typeLabel} 이름 <b>필수</b>
+                </span>
+                <input
+                  aria-label={`${typeLabel} 이름`}
+                  autoFocus
+                  value={editor.name}
+                  onChange={(event) =>
+                    setEditor({ ...editor, name: event.target.value })
+                  }
+                  placeholder={
+                    editor.type === "MAKE"
+                      ? "예: BMW"
+                      : editor.type === "MODEL"
+                        ? "예: M3"
+                        : "예: G80"
+                  }
+                />
+              </label>
+              <div className="vehicle-editor-split">
+                <label>
+                  <span>정렬 순서</span>
+                  <input
+                    aria-label="정렬 순서"
+                    type="number"
+                    min="0"
+                    max="10000"
+                    value={editor.sortOrder}
+                    onChange={(event) =>
+                      setEditor({ ...editor, sortOrder: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="vehicle-active-toggle">
+                  <span>사이트 표시</span>
+                  <input
+                    aria-label="사이트 표시"
+                    type="checkbox"
+                    checked={editor.isActive}
+                    onChange={(event) =>
+                      setEditor({ ...editor, isActive: event.target.checked })
+                    }
+                  />
+                  <strong>{editor.isActive ? "노출" : "숨김"}</strong>
+                </label>
+              </div>
+              {editor.type === "GENERATION" && (
+                <div className="vehicle-generation-fields">
+                  <label>
+                    <span>연식</span>
+                    <textarea
+                      aria-label="연식"
+                      value={editor.years}
+                      onChange={(event) =>
+                        setEditor({ ...editor, years: event.target.value })
+                      }
+                      placeholder={"2025\n2024\n2023"}
+                    />
+                    <small>쉼표 또는 줄바꿈으로 구분</small>
+                  </label>
+                  <label>
+                    <span>엔진</span>
+                    <textarea
+                      aria-label="엔진"
+                      value={editor.engines}
+                      onChange={(event) =>
+                        setEditor({ ...editor, engines: event.target.value })
+                      }
+                      placeholder={"3.0 가솔린\n3.0 디젤"}
+                    />
+                    <small>쉼표 또는 줄바꿈으로 구분</small>
+                  </label>
+                  <label>
+                    <span>세부 사양</span>
+                    <textarea
+                      aria-label="세부 사양"
+                      value={editor.specifications}
+                      onChange={(event) =>
+                        setEditor({
+                          ...editor,
+                          specifications: event.target.value,
+                        })
+                      }
+                      placeholder={"후륜 · 세단\n사륜 · 세단"}
+                    />
+                    <small>쉼표 또는 줄바꿈으로 구분</small>
+                  </label>
+                </div>
+              )}
+              {editorError && (
+                <div className="vehicle-editor-error" role="alert">
+                  <AlertTriangle />
+                  {editorError}
+                </div>
+              )}
+            </div>
+            <footer>
+              {editor.mode === "edit" && (
+                <button
+                  className="admin-button danger"
+                  onClick={() => {
+                    setPendingDelete({
+                      type: editor.type,
+                      id: editor.id,
+                      name: editor.name,
+                    });
+                    setEditor(null);
+                  }}
+                >
+                  <XCircle />
+                  삭제
+                </button>
+              )}
+              <span />
+              <button
+                className="admin-button secondary"
+                disabled={processing}
+                onClick={() => setEditor(null)}
+              >
+                취소
+              </button>
+              <button
+                className="admin-button primary"
+                disabled={processing}
+                onClick={saveVehicle}
+              >
+                <Check />
+                {processing ? "저장 중…" : "저장"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {pendingDelete && (
+        <div
+          className="dialog-backdrop"
+          onMouseDown={() => !processing && setPendingDelete(null)}
+        >
+          <section
+            className="vehicle-delete-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="차량 정보 삭제 확인"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <AlertTriangle />
+            <h2>{pendingDelete.name} 항목을 삭제할까요?</h2>
+            <p>
+              제조사를 삭제하면 하위 모델과 세대가, 모델을 삭제하면 하위 세대가
+              함께 삭제됩니다. 삭제 후 사이트 차량 선택 목록에서도 사라집니다.
+            </p>
+            <div>
+              <button
+                className="admin-button secondary"
+                disabled={processing}
+                onClick={() => setPendingDelete(null)}
+              >
+                취소
+              </button>
+              <button
+                className="admin-button danger"
+                disabled={processing}
+                onClick={deleteVehicle}
+              >
+                <XCircle />
+                {processing ? "삭제 중…" : "삭제"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </>
+  );
 }
 
 function AdminModule({ path, showToast }: { path: string; showToast: (message: string) => void }) {

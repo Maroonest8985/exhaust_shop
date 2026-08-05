@@ -2,6 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { auditLogs, productImages, products, productVehicleFitments } from "../../../db/schema";
 import { isAdminRequest } from "../../../lib/admin-auth";
+import { parseProductOptionGroups, type ProductOptionGroup } from "../../../lib/product-options";
 import { existingVehicleGenerationIds, parseVehicleGenerationIds, productVehicleFitmentsByProductIds, type ProductVehicleFitmentSummary } from "../../../lib/product-vehicle-fitments";
 
 export const runtime = "nodejs";
@@ -35,6 +36,7 @@ function serializeProduct(product: typeof products.$inferSelect, images: Array<t
     summary: product.summary,
     description: product.description,
     specifications: product.specifications,
+    optionGroups: product.optionGroups,
     vehicleFitments,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
@@ -104,6 +106,7 @@ export async function POST(request: Request) {
     const rawSpecifications = field(formData, "specifications", 20_000);
     let specifications: Array<{ label: string; value: string }> = [];
     let vehicleGenerationIds: string[] = [];
+    let optionGroups: ProductOptionGroup[] = [];
     try {
       const parsed = JSON.parse(rawSpecifications) as unknown;
       if (Array.isArray(parsed)) {
@@ -118,6 +121,7 @@ export async function POST(request: Request) {
           .slice(0, 30);
       }
       vehicleGenerationIds = parseVehicleGenerationIds(field(formData, "vehicleGenerationIds", 10_000));
+      optionGroups = parseProductOptionGroups(field(formData, "optionGroups", 30_000) || "[]");
     } catch {
       return Response.json({ error: "제품 사양 또는 적용 차량 정보 형식이 올바르지 않습니다." }, { status: 422 });
     }
@@ -184,6 +188,7 @@ export async function POST(request: Request) {
         summary,
         description,
         specifications,
+        optionGroups,
       }).returning();
       const images = await tx.insert(productImages).values(encodedImages.map((image) => ({ ...image, productId: product.id }))).returning();
       if (!isUniversalFitment) {
@@ -194,7 +199,7 @@ export async function POST(request: Request) {
         targetType: "PRODUCT",
         targetId: product.id,
         reason: "운영자 상품 등록",
-        diff: { sku, slug, status, price, imageCount: images.length, isUniversalFitment, vehicleGenerationIds: isUniversalFitment ? [] : vehicleGenerationIds },
+        diff: { sku, slug, status, price, imageCount: images.length, optionGroupCount: optionGroups.length, isUniversalFitment, vehicleGenerationIds: isUniversalFitment ? [] : vehicleGenerationIds },
       });
       return { product, images };
     });

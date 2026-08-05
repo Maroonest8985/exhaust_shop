@@ -418,8 +418,6 @@ const vehicleCatalog: Record<string, Record<string, Record<string, VehicleGenera
 };
 */
 
-const vehicleConditions = ["순정 리어 범퍼", "카본 디퓨저 장착"];
-
 function storedVehiclesToCatalog(vehicles: StoredVehicleMake[]): VehicleCatalog {
   return vehicles.reduce<VehicleCatalog>((catalog, make) => {
     catalog[make.name] = make.models.reduce<Record<string, Record<string, VehicleGeneration>>>((models, model) => {
@@ -722,7 +720,7 @@ export function TaibosiApp({ path, vehicleQuery = {} }: { path: string; vehicleQ
 
 function BrandMark({ dark = false }: { dark?: boolean }) {
   return (
-    <a className={`brand-mark ${dark ? "brand-dark" : ""}`} href="/" aria-label="Taibosi Exhaust Korea 홈">
+    <a className={`brand-mark ${dark ? "brand-dark" : ""}`} href="/admin" aria-label="Taibosi Exhaust Korea 홈">
       <span className="brand-symbol"><i /><i /><i /></span>
       <span><strong>TAIBOSI</strong><small>EXHAUST KOREA</small></span>
     </a>
@@ -965,30 +963,21 @@ function ProductCard({ product }: { product: Product }) {
 }
 
 function VehicleFinderPage({ vehicleCatalog, vehiclesLoading, vehicleLoadError }: { vehicleCatalog: VehicleCatalog; vehiclesLoading: boolean; vehicleLoadError: string }) {
-  const steps = ["제조사", "모델", "세대 / 섀시", "연식", "엔진", "세부 사양", "추가 조건", "결과 확인"];
+  const steps = ["제조사", "모델", "세대 / 섀시"];
   const [current, setCurrent] = useState(0);
-  const [selected, setSelected] = useState<string[]>(["", "", "", "", "", "", ""]);
+  const [selected, setSelected] = useState<string[]>(["", "", ""]);
   const [optionSearch, setOptionSearch] = useState("");
-  const complete = current === 7;
-  const generationData = vehicleGeneration(vehicleCatalog, { maker: selected[0], model: selected[1], generation: selected[2] });
+  const complete = current === 3;
   const options = [
     Object.keys(vehicleCatalog),
     vehicleModels(vehicleCatalog, selected[0]),
     vehicleGenerations(vehicleCatalog, selected[0], selected[1]),
-    generationData?.years ?? [],
-    generationData?.engines ?? [],
-    generationData?.specifications ?? [],
-    vehicleConditions,
   ];
   const currentOptions = (options[current] ?? []).filter((option) => option.toLocaleLowerCase("ko-KR").includes(optionSearch.trim().toLocaleLowerCase("ko-KR")));
-  const finderSelection: VehicleSelection = {
+  const finderSelection: Pick<VehicleSelection, "maker" | "model" | "generation"> = {
     maker: selected[0],
     model: selected[1],
     generation: selected[2],
-    year: selected[3],
-    engine: selected[4],
-    specification: selected[5],
-    condition: selected[6],
   };
 
   const selectOption = (option: string) => {
@@ -998,24 +987,24 @@ function VehicleFinderPage({ vehicleCatalog, vehiclesLoading, vehicleLoadError }
 
   return (
     <div className="vehicle-page page-light">
-      <div className="page-hero compact dark-hero"><div className="grid-container"><span className="eyebrow red">VEHICLE FINDER</span><h1>차량 정보를 선택해 주세요</h1><p>정확한 적합성 확인을 위해 세대와 엔진 정보가 필요할 수 있습니다.</p></div></div>
+      <div className="page-hero compact dark-hero"><div className="grid-container"><span className="eyebrow red">VEHICLE FINDER</span><h1>차량 정보를 선택해 주세요</h1><p>제조사, 모델, 세대 / 섀시를 선택하면 호환 제품을 확인할 수 있습니다.</p></div></div>
       <div className="grid-container vehicle-workspace">
         <div className="stepper" aria-label="차량 선택 진행 단계">{steps.map((step, index) => <button key={step} onClick={() => { if (index <= current) { setCurrent(index); setOptionSearch(""); } }} className={index === current ? "active" : index < current ? "done" : ""}><span>{index < current ? <Check /> : index + 1}</span><b>{step}</b></button>)}</div>
         <div className="vehicle-columns">
           <section className="vehicle-options-card">
-            <span className="step-label">STEP {String(current + 1).padStart(2, "0")} / 08</span>
+            <span className="step-label">STEP {String(Math.min(current + 1, 3)).padStart(2, "0")} / 03</span>
             <h2>{complete ? "선택한 차량을 확인해 주세요" : `${steps[current]}을 선택해 주세요`}</h2>
             {!complete ? <>
-              {current < 2 && <label className="option-search"><Search /><input value={optionSearch} onChange={(event) => setOptionSearch(event.target.value)} aria-label={`${steps[current]} 검색`} placeholder={`${steps[current]} 검색`} /></label>}
+              {current < 3 && <label className="option-search"><Search /><input value={optionSearch} onChange={(event) => setOptionSearch(event.target.value)} aria-label={`${steps[current]} 검색`} placeholder={`${steps[current]} 검색`} /></label>}
               <div className="option-list">{currentOptions.map((option) => <button key={option} className={selected[current] === option ? "selected" : ""} onClick={() => selectOption(option)}><span>{option.slice(0, 2)}</span><strong>{option}</strong>{selected[current] === option && <CheckCircle2 />}</button>)}</div>
               {currentOptions.length === 0 && <div className="vehicle-option-empty">{vehiclesLoading ? <RotateCcw/> : vehicleLoadError ? <AlertTriangle/> : <Search/>}<span>{vehiclesLoading ? "차량 정보를 불러오는 중입니다…" : vehicleLoadError ? "차량 정보를 불러오지 못했습니다. 페이지를 새로고침해 주세요." : current > 0 && !selected[current - 1] ? "먼저 이전 단계의 항목을 선택해 주세요." : "검색 조건에 맞는 항목이 없습니다."}</span></div>}
             </> : <div className="complete-check"><CheckCircle2 /><strong>차량 선택이 완료되었습니다</strong><p>선택한 차량의 호환 제품을 확인할까요?</p></div>}
-            <div className="vehicle-actions"><button className="button secondary" disabled={current === 0} onClick={() => { setOptionSearch(""); setCurrent((value) => Math.max(0, value - 1)); }}><ArrowLeft /> 이전</button>{complete ? <a className="button primary" href={vehicleUrl(finderSelection)}>호환 제품 보기 <ArrowRight /></a> : <button className="button primary" disabled={!selected[current]} onClick={() => { setOptionSearch(""); setCurrent((value) => Math.min(7, value + 1)); }}>다음 <ArrowRight /></button>}</div>
+            <div className="vehicle-actions"><button className="button secondary" disabled={current === 0} onClick={() => { setOptionSearch(""); setCurrent((value) => Math.max(0, value - 1)); }}><ArrowLeft /> 이전</button>{complete ? <a className="button primary" href={vehicleUrl(finderSelection)}>호환 제품 보기 <ArrowRight /></a> : <button className="button primary" disabled={!selected[current]} onClick={() => { setOptionSearch(""); setCurrent((value) => Math.min(3, value + 1)); }}>다음 <ArrowRight /></button>}</div>
           </section>
           <aside className="vehicle-summary-panel">
             <div className="vehicle-silhouette"><CarFront /><span>{selected[2] || "-"}</span></div>
-            <span className="eyebrow">SELECTED VEHICLE</span><h2>{selected[0] || "제조사"} {selected[1] || "모델"}</h2><p>{[selected[2], selected[3], selected[4]].filter(Boolean).join(" · ") || "차량 정보를 선택해 주세요"}</p>
-            <dl>{steps.slice(0, 7).map((label, index) => <div key={label}><dt>{label}</dt><dd>{selected[index] || "선택 필요"}</dd></div>)}</dl>
+            <span className="eyebrow">SELECTED VEHICLE</span><h2>{selected[0] || "제조사"} {selected[1] || "모델"}</h2><p>{selected[2] || "세대 / 섀시를 선택해 주세요"}</p>
+            <dl>{steps.map((label, index) => <div key={label}><dt>{label}</dt><dd>{selected[index] || "선택 필요"}</dd></div>)}</dl>
             <div className="summary-note"><Info /><span>상위 항목을 변경하면 이후 선택값이 초기화됩니다.</span></div>
           </aside>
         </div>
